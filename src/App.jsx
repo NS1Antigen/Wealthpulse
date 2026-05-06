@@ -66,10 +66,10 @@ import { motion } from "framer-motion";
 const ASSET_TYPES = [
   { value: "bitcoin", label: "Bitcoin" },
   { value: "crypto_other", label: "Other Crypto" },
-  { value: "thai_stock", label: "Thai Stock" },
-  { value: "international_stock", label: "International Stock / Index" },
-  { value: "mutual_fund", label: "Mutual Fund" },
-  { value: "gold", label: "Gold Spot" },
+  { value: "international_stock", label: "International Stock / ETF" },
+  { value: "thai_stock", label: "Thai Stock - Manual Price" },
+  { value: "mutual_fund", label: "Thai Mutual Fund - Manual NAV" },
+  { value: "thai_gold", label: "Thai Gold 96.5% - Manual Price" },
   { value: "property", label: "Property / Condo" },
   { value: "land", label: "Land" },
   { value: "cash", label: "Cash / Savings" },
@@ -140,7 +140,7 @@ const TICKER_SUGGESTIONS = {
 };
 
 function needsTicker(type) {
-  return ["bitcoin", "crypto_other", "thai_stock", "international_stock", "mutual_fund", "gold"].includes(type);
+  return ["bitcoin", "crypto_other", "international_stock"].includes(type);
 }
 
 function App() {
