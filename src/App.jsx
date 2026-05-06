@@ -73,6 +73,7 @@ const ASSET_TYPES = [
   { value: "cash", label: "Cash / Savings" },
   { value: "other", label: "Other" }
 ];
+
 const MUTUAL_FUND_DATABASE = [
   { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", amc: "SCBAM" },
   { symbol: "SCBNDQ", name: "SCB Nasdaq 100 Fund", amc: "SCBAM" },
@@ -83,7 +84,10 @@ const MUTUAL_FUND_DATABASE = [
   { symbol: "KFUS", name: "Krungsri US Equity Fund", amc: "Krungsri" },
   { symbol: "TMBUS500", name: "TMB US500 Equity Index Fund", amc: "Eastspring" }
 ];
-const TYPE_LABELS = Object.fromEntries(ASSET_TYPES.map((a) => [a.value, a.label.replace(/^.. /, "")]));
+
+const TYPE_LABELS = Object.fromEntries(
+  ASSET_TYPES.map((a) => [a.value, a.label.replace(/^.. /, "")])
+);
 
 const TYPE_ICONS = {
   bitcoin: Bitcoin,
@@ -106,39 +110,8 @@ const COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"
 
 function defaultTicker(type) {
   if (type === "bitcoin") return "BTC";
-  if (type === "international_stock") return "";
-  if (type === "thai_stock") return "";
-  if (type === "mutual_fund") return "";
-  if (type === "thai_gold") return "";
   return "";
 }
-
-const TICKER_SUGGESTIONS = {
-  international_stock: [
-    "SP500",
-    "NASDAQ",
-    "AAPL",
-    "NVDA",
-    "MSFT",
-    "GOOGL",
-    "TSLA",
-    "SPY",
-    "QQQ"
-  ],
-  thai_stock: [
-    "PTT.BK",
-    "CPALL.BK",
-    "AOT.BK",
-    "KBANK.BK",
-    "SCB.BK",
-    "ADVANC.BK",
-    "BDMS.BK",
-    "DELTA.BK"
-  ],
-  bitcoin: ["BTC"],
-  crypto_other: ["ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"],
-  gold: ["XAU"]
-};
 
 function needsLiveTicker(type) {
   return ["bitcoin", "crypto_other"].includes(type);
@@ -196,10 +169,11 @@ function valueToThb(value, currency, usdToThb) {
 }
 
 async function fetchLiveUsdToThb(fallback = 34.5) {
+  // Prefer Frankfurter first because it uses ECB reference data.
   const apis = [
-  "https://api.frankfurter.app/latest?from=USD&to=THB",
-  "https://open.er-api.com/v6/latest/USD"
-];
+    "https://api.frankfurter.app/latest?from=USD&to=THB",
+    "https://open.er-api.com/v6/latest/USD"
+  ];
 
   for (const url of apis) {
     try {
@@ -222,36 +196,34 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
   const qty = safeNumber(asset.quantity);
   const manual = safeNumber(asset.manual_value_thb);
 
-  // Manual unit assets: value = quantity × current price per unit.
-  // International stocks can be entered in USD and converted to THB automatically.
   if (isManualUnitAsset(asset.asset_type)) {
-    const unitCurrency = asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
+    const unitCurrency =
+      asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
     return valueToThb(qty * manual, unitCurrency, usdToThb);
   }
 
-  // Cash/saving: amount can be THB or USD.
+  // Cash / savings is a simple balance, not an investment.
+  // It can be THB or USD; USD cash is converted using live USD/THB.
   if (asset.asset_type === "cash") {
-    return asset.purchase_currency === "USD"
-      ? manual * usdToThb
-      : manual;
+    return asset.purchase_currency === "USD" ? manual * usdToThb : manual;
   }
 
-  // Manual total assets: value = manual total value in THB.
   if (asset.use_manual_value || !needsLiveTicker(asset.asset_type)) {
     return manual;
   }
 
-  // Live ticker assets: Bitcoin/crypto price from API × quantity, converted by live USD/THB.
   const priceData = prices?.[asset.ticker];
   const livePrice = safeNumber(priceData?.price);
   if (!livePrice || !qty) return manual;
 
   const priceCurrency = priceData?.currency || "USD";
-  const value = qty * livePrice;
-  return valueToThb(value, priceCurrency, usdToThb);
+  return valueToThb(qty * livePrice, priceCurrency, usdToThb);
 }
 
 function getAssetCostValueThb(asset, usdToThb) {
+  // Cash has no cost basis and must not create profit/loss.
+  if (asset.asset_type === "cash") return 0;
+
   const qty = safeNumber(asset.quantity);
   const buy = safeNumber(asset.purchase_price_per_unit);
   const manual = safeNumber(asset.manual_value_thb);
@@ -267,6 +239,7 @@ function getAssetCostValueThb(asset, usdToThb) {
 function convertThb(valueThb, usdToThb, currency) {
   return currency === "USD" ? valueThb / usdToThb : valueThb;
 }
+
 function App() {
   const [theme, setTheme] = useState(getTheme());
   const [page, setPage] = useState("dashboard");
@@ -312,11 +285,13 @@ function App() {
         ...a,
         currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb)
       }));
+
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
       const breakdown = {};
       withValues.forEach((a) => {
         breakdown[a.asset_type] = (breakdown[a.asset_type] || 0) + a.currentValueThb;
       });
+
       addTimelineEntry(totalThb, totalThb / finalUsdToThb, breakdown);
       setTimeline(getTimeline());
     } finally {
@@ -344,12 +319,7 @@ function App() {
 
   return (
     <div className="app">
-      <Header
-        page={page}
-        setPage={setPage}
-        theme={theme}
-        setTheme={setTheme}
-      />
+      <Header page={page} setPage={setPage} theme={theme} setTheme={setTheme} />
 
       <main className="container">
         {page === "dashboard" && (
@@ -379,24 +349,26 @@ function App() {
             }}
           />
         )}
+
         {page === "search" && (
-  <SearchAssetPage
-    onAdd={(asset) => {
-      setModalAsset({
-        name: asset.name,
-        asset_type: asset.asset_type,
-        ticker: asset.symbol,
-        quantity: "",
-        purchase_price_per_unit: "",
-        purchase_currency: asset.currency || defaultCurrentPriceCurrency(asset.asset_type),
-        current_price_currency: defaultCurrentPriceCurrency(asset.asset_type),
-        manual_value_thb: "",
-        use_manual_value: isManualUnitAsset(asset.asset_type),
-        notes: ""
-      });
-    }}
-  />
-)}
+          <SearchAssetPage
+            onAdd={(asset) => {
+              setModalAsset({
+                name: asset.name,
+                asset_type: asset.asset_type,
+                ticker: asset.symbol,
+                quantity: "",
+                purchase_price_per_unit: "",
+                purchase_currency: asset.currency || defaultCurrentPriceCurrency(asset.asset_type),
+                current_price_currency: defaultCurrentPriceCurrency(asset.asset_type),
+                manual_value_thb: "",
+                use_manual_value: isManualUnitAsset(asset.asset_type),
+                notes: ""
+              });
+            }}
+          />
+        )}
+
         {page === "manage" && (
           <ManageAssets
             assets={assets}
@@ -428,83 +400,102 @@ function App() {
           editingAsset={modalAsset.id ? modalAsset : null}
           onClose={() => setModalAsset(null)}
           onSave={(data) => {
-            if (modalAsset?.id) updateAsset(modalAsset.id, data);
-            else {
-  const existing = getAssets().find(
-    (a) =>
-      a.ticker &&
-      data.ticker &&
-      a.ticker.toUpperCase() === data.ticker.toUpperCase() &&
-      a.asset_type === data.asset_type
-  );
+            if (modalAsset?.id) {
+              updateAsset(modalAsset.id, {
+                ...data,
+                cost_incomplete:
+                  data.asset_type !== "cash" &&
+                  (!data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0)
+              });
+            } else if (data.asset_type === "cash") {
+              // Cash/savings is simple balance only.
+              // It never merges automatically, never creates buy transactions,
+              // and never shows cost incomplete or profit percentage.
+              createAsset({
+                ...data,
+                quantity: 0,
+                ticker: "",
+                purchase_price_per_unit: 0,
+                cost_incomplete: false,
+                transactions: []
+              });
+            } else {
+              const existing = getAssets().find(
+                (a) =>
+                  a.ticker &&
+                  data.ticker &&
+                  a.ticker.toUpperCase() === data.ticker.toUpperCase() &&
+                  a.asset_type === data.asset_type
+              );
 
-  const newTx = {
-    id: crypto.randomUUID(),
-    type: "buy",
-    date: new Date().toISOString(),
-    quantity: Number(data.quantity) || 0,
-    price_per_unit: Number(data.purchase_price_per_unit) || null,
-    currency: data.purchase_currency || "THB",
-    note: data.notes || ""
-  };
+              const newTx = {
+                id: crypto.randomUUID(),
+                type: "buy",
+                date: new Date().toISOString(),
+                quantity: Number(data.quantity) || 0,
+                price_per_unit: Number(data.purchase_price_per_unit) || null,
+                currency: data.purchase_currency || "THB",
+                note: data.notes || ""
+              };
 
-  if (existing && Number(data.quantity) > 0) {
-    const oldTransactions = existing.transactions || [
-      {
-        id: crypto.randomUUID(),
-        type: "buy",
-        date: existing.createdAt || new Date().toISOString(),
-        quantity: Number(existing.quantity) || 0,
-        price_per_unit: Number(existing.purchase_price_per_unit) || null,
-        currency: existing.purchase_currency || "THB",
-        note: existing.notes || ""
-      }
-    ];
+              if (existing && Number(data.quantity) > 0) {
+                const oldTransactions = existing.transactions || [
+                  {
+                    id: crypto.randomUUID(),
+                    type: "buy",
+                    date: existing.createdAt || new Date().toISOString(),
+                    quantity: Number(existing.quantity) || 0,
+                    price_per_unit: Number(existing.purchase_price_per_unit) || null,
+                    currency: existing.purchase_currency || "THB",
+                    note: existing.notes || ""
+                  }
+                ];
 
-    const transactions = [...oldTransactions, newTx];
+                const transactions = [...oldTransactions, newTx];
 
-    const totalQty = transactions.reduce(
-      (sum, tx) => sum + (Number(tx.quantity) || 0),
-      0
-    );
+                const totalQty = transactions.reduce(
+                  (sum, tx) => sum + (Number(tx.quantity) || 0),
+                  0
+                );
 
-    const knownCostTx = transactions.filter(
-      (tx) => Number(tx.price_per_unit) > 0 && Number(tx.quantity) > 0
-    );
+                const knownCostTx = transactions.filter(
+                  (tx) => Number(tx.price_per_unit) > 0 && Number(tx.quantity) > 0
+                );
 
-    const knownQty = knownCostTx.reduce(
-      (sum, tx) => sum + Number(tx.quantity),
-      0
-    );
+                const knownQty = knownCostTx.reduce(
+                  (sum, tx) => sum + Number(tx.quantity),
+                  0
+                );
 
-    const totalKnownCost = knownCostTx.reduce(
-      (sum, tx) => sum + Number(tx.quantity) * Number(tx.price_per_unit),
-      0
-    );
+                const totalKnownCost = knownCostTx.reduce(
+                  (sum, tx) => sum + Number(tx.quantity) * Number(tx.price_per_unit),
+                  0
+                );
 
-    const avgCost = knownQty > 0 ? totalKnownCost / knownQty : 0;
+                const avgCost = knownQty > 0 ? totalKnownCost / knownQty : 0;
 
-    updateAsset(existing.id, {
-      ...existing,
-      quantity: totalQty,
-      purchase_price_per_unit: avgCost,
-      cost_incomplete: knownQty < totalQty,
-      current_price_currency: data.current_price_currency || existing.current_price_currency,
-      manual_value_thb: data.manual_value_thb,
-      use_manual_value: data.use_manual_value,
-      manual_price_updated_at: data.manual_price_updated_at,
-      transactions
-    });
-  } else {
-    createAsset({
-      ...data,
-      transactions: [newTx],
-      cost_incomplete:
-  data.asset_type !== "cash" &&
-  (!data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0)
-    });
-  }
-}
+                updateAsset(existing.id, {
+                  ...existing,
+                  name: existing.name || data.name,
+                  quantity: totalQty,
+                  purchase_price_per_unit: avgCost,
+                  cost_incomplete: knownQty < totalQty,
+                  current_price_currency: data.current_price_currency || existing.current_price_currency,
+                  manual_value_thb: data.manual_value_thb,
+                  use_manual_value: data.use_manual_value,
+                  manual_price_updated_at: data.manual_price_updated_at,
+                  transactions
+                });
+              } else {
+                createAsset({
+                  ...data,
+                  transactions: [newTx],
+                  cost_incomplete:
+                    !data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0
+                });
+              }
+            }
+
             setModalAsset(null);
             refreshAssets();
           }}
@@ -586,7 +577,7 @@ function Dashboard(props) {
 
       <div className="grid2">
         <AllocationChart assets={assets} currency={currency} hidden={hidden} />
-        <Analytics assets={assets} currency={currency} hidden={hidden} usdToThb={usdToThb} />
+        <Analytics assets={assets} currency={currency} hidden={hidden} />
       </div>
 
       <NetWorthChart timeline={timeline} currency={currency} hidden={hidden} />
@@ -603,9 +594,9 @@ function Dashboard(props) {
           <div className="assetList">
             {assets.map((asset) => (
               <AssetItem
+                portfolioTotal={totalValue}
                 key={asset.id}
                 asset={asset}
-                portfolioTotal={totalValue}
                 priceData={prices[asset.ticker]}
                 currency={currency}
                 hidden={hidden}
@@ -706,11 +697,7 @@ function AllocationChart({ assets, currency, hidden }) {
               <div key={d.name} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div className="legendRow">
                   <span><i style={{ background: COLORS[i % COLORS.length] }} />{d.name}</span>
-                  <b>
-                    {hidden
-                      ? "••••••"
-                      : `${d.percent.toFixed(1)}%`}
-                  </b>
+                  <b>{hidden ? "••••••" : `${d.percent.toFixed(1)}%`}</b>
                 </div>
 
                 <div
@@ -894,6 +881,7 @@ function NetWorthChart({ timeline, currency, hidden }) {
     </section>
   );
 }
+
 function recalculateAssetFromTransactions(asset, transactions) {
   const totalQty = transactions.reduce(
     (sum, tx) => sum + (Number(tx.quantity) || 0),
@@ -928,16 +916,15 @@ function recalculateAssetFromTransactions(asset, transactions) {
 function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portfolioTotal }) {
   const Icon = TYPE_ICONS[asset.asset_type] || Wallet;
   const [showTx, setShowTx] = useState(false);
-  const allocationPct =
-    Number(portfolioTotal) > 0
-      ? ((Number(asset.currentValue) || 0) / Number(portfolioTotal)) * 100
-      : 0;
+  const allocationPct = portfolioTotal > 0
+    ? ((Number(asset.currentValue) || 0) / portfolioTotal) * 100
+    : 0;
   const pnl = (Number(asset.currentValue) || 0) - (Number(asset.costValue) || 0);
-const pnlPct =
-  Number(asset.costValue) > 0
-    ? (pnl / Number(asset.costValue)) * 100
-    : null;
-  
+  const pnlPct =
+    asset.asset_type !== "cash" && Number(asset.costValue) > 0
+      ? (pnl / Number(asset.costValue)) * 100
+      : null;
+
   function deleteTransaction(txId) {
     if (!confirm("Delete this transaction?")) return;
 
@@ -963,27 +950,22 @@ const pnlPct =
           {TYPE_LABELS[asset.asset_type] || asset.asset_type}
           {asset.ticker ? ` · ${asset.ticker}` : ""}
           {` · ${allocationPct.toFixed(1)}% of portfolio`}
-          {asset.quantity ? ` · ${asset.quantity} units` : ""}
+          {asset.quantity && asset.asset_type !== "cash" ? ` · ${asset.quantity} units` : ""}
+          {asset.asset_type === "cash" ? ` · ${asset.purchase_currency || "THB"}` : ""}
           {priceData ? ` · ${priceData.source}` : ""}
         </div>
 
-        {asset.manual_price_updated_at && (
-          <div className="muted small">
-            Manual price updated: {new Date(asset.manual_price_updated_at).toLocaleString()}
-          </div>
+        {asset.asset_type !== "cash" && asset.cost_incomplete && (
+          <div className="red small">Cost incomplete: some buy price missing</div>
         )}
 
-        {asset.asset_type !== "cash" && asset.cost_incomplete && (
-  <div className="red small">Cost incomplete: some buy price missing</div>
-)}
-
-        {asset.transactions?.length > 0 && (
+        {asset.asset_type !== "cash" && asset.transactions?.length > 0 && (
           <button className="ghost" onClick={() => setShowTx(!showTx)}>
             {showTx ? "Hide" : "Show"} transactions ({asset.transactions.length})
           </button>
         )}
 
-        {showTx && (
+        {asset.asset_type !== "cash" && showTx && (
           <div className="txList">
             {asset.transactions.map((tx) => (
               <div className="txRow" key={tx.id}>
@@ -1005,12 +987,12 @@ const pnlPct =
       <div className="assetValue">
         <b>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
         {pnlPct !== null && !hidden && (
-  <span className={pnl >= 0 ? "green" : "red"}>
-    {pnl >= 0 ? "+" : ""}
-    {pnlPct.toFixed(2)}%
-  </span>
-)}
-        {priceData?.change_24h_percent ? (
+          <span className={pnl >= 0 ? "green" : "red"}>
+            {pnl >= 0 ? "+" : ""}
+            {pnlPct.toFixed(2)}%
+          </span>
+        )}
+        {asset.asset_type !== "cash" && priceData?.change_24h_percent ? (
           <span className={priceData.change_24h_percent >= 0 ? "green" : "red"}>
             {priceData.change_24h_percent >= 0 ? "+" : ""}
             {priceData.change_24h_percent.toFixed(2)}%
@@ -1025,54 +1007,55 @@ const pnlPct =
     </div>
   );
 }
+
 function SearchAssetPage({ onAdd }) {
   const [query, setQuery] = useState("");
   const [verifiedPrices, setVerifiedPrices] = useState({});
-const [checkingSymbol, setCheckingSymbol] = useState(null);
+  const [checkingSymbol, setCheckingSymbol] = useState(null);
 
-async function checkPrice(asset) {
-  setCheckingSymbol(asset.symbol);
+  async function checkPrice(asset) {
+    setCheckingSymbol(asset.symbol);
 
-  const fakeAsset = {
-    name: asset.name,
-    asset_type: asset.asset_type,
-    ticker: asset.symbol,
-    quantity: 1,
-    manual_value_thb: 0
-  };
+    const fakeAsset = {
+      name: asset.name,
+      asset_type: asset.asset_type,
+      ticker: asset.symbol,
+      quantity: 1,
+      manual_value_thb: 0
+    };
 
-  try {
-    const result = await fetchAllPrices([fakeAsset]);
-    const priceData = result.prices[asset.symbol];
+    try {
+      const result = await fetchAllPrices([fakeAsset]);
+      const priceData = result.prices[asset.symbol];
 
-    setVerifiedPrices((old) => ({
-      ...old,
-      [asset.symbol]: priceData
-        ? {
-            ok: true,
-            price: priceData.price,
-            currency: priceData.currency,
-            source: priceData.source || "Price API"
-          }
-        : {
-            ok: false,
-            source: "Price unavailable"
-          }
-    }));
-  } catch {
-    setVerifiedPrices((old) => ({
-      ...old,
-      [asset.symbol]: {
-        ok: false,
-        source: "Price check failed"
-      }
-    }));
+      setVerifiedPrices((old) => ({
+        ...old,
+        [asset.symbol]: priceData
+          ? {
+              ok: true,
+              price: priceData.price,
+              currency: priceData.currency,
+              source: priceData.source || "Price API"
+            }
+          : {
+              ok: false,
+              source: "Price unavailable"
+            }
+      }));
+    } catch {
+      setVerifiedPrices((old) => ({
+        ...old,
+        [asset.symbol]: {
+          ok: false,
+          source: "Price check failed"
+        }
+      }));
+    }
+
+    setCheckingSymbol(null);
   }
 
-  setCheckingSymbol(null);
-}
   const LOCAL_ASSETS = [
-    // Crypto
     { symbol: "BTC", name: "Bitcoin", asset_type: "bitcoin", source: "CoinGecko", currency: "USD" },
     { symbol: "ETH", name: "Ethereum", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
     { symbol: "SOL", name: "Solana", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
@@ -1081,7 +1064,6 @@ async function checkPrice(asset) {
     { symbol: "ADA", name: "Cardano", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
     { symbol: "DOGE", name: "Dogecoin", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
 
-    // US stocks / ETFs
     { symbol: "AAPL", name: "Apple", asset_type: "international_stock", source: "Market API", currency: "USD" },
     { symbol: "NVDA", name: "Nvidia", asset_type: "international_stock", source: "Market API", currency: "USD" },
     { symbol: "MSFT", name: "Microsoft", asset_type: "international_stock", source: "Market API", currency: "USD" },
@@ -1091,7 +1073,6 @@ async function checkPrice(asset) {
     { symbol: "VOO", name: "Vanguard S&P 500 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
     { symbol: "QQQ", name: "Nasdaq 100 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
 
-    // Thai stocks
     { symbol: "PTT.BK", name: "PTT", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
     { symbol: "LH.BK", name: "Land and Houses", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
     { symbol: "AOT.BK", name: "Airports of Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
@@ -1102,7 +1083,6 @@ async function checkPrice(asset) {
     { symbol: "BDMS.BK", name: "Bangkok Dusit Medical Services", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
     { symbol: "DELTA.BK", name: "Delta Electronics Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
 
-    // Mutual funds
     { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
     { symbol: "SCBNDQ", name: "SCB Nasdaq 100 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
     { symbol: "SCBUSA", name: "SCB US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
@@ -1110,7 +1090,6 @@ async function checkPrice(asset) {
     { symbol: "K-USA", name: "K US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
     { symbol: "KFUS", name: "Krungsri US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
 
-    // Gold
     { symbol: "THAI-GOLD", name: "Thai Gold 96.5%", asset_type: "thai_gold", source: "Manual price per baht", currency: "THB" }
   ];
 
@@ -1148,28 +1127,28 @@ async function checkPrice(asset) {
                 {TYPE_LABELS[asset.asset_type] || asset.asset_type} · {asset.source}
               </div>
               {verifiedPrices[asset.symbol] && (
-  <div className={verifiedPrices[asset.symbol].ok ? "green small" : "red small"}>
-    {verifiedPrices[asset.symbol].ok
-      ? `Verified: ${verifiedPrices[asset.symbol].price} ${verifiedPrices[asset.symbol].currency} · ${verifiedPrices[asset.symbol].source}`
-      : verifiedPrices[asset.symbol].source}
-  </div>
-)}
+                <div className={verifiedPrices[asset.symbol].ok ? "green small" : "red small"}>
+                  {verifiedPrices[asset.symbol].ok
+                    ? `Verified: ${verifiedPrices[asset.symbol].price} ${verifiedPrices[asset.symbol].currency} · ${verifiedPrices[asset.symbol].source}`
+                    : verifiedPrices[asset.symbol].source}
+                </div>
+              )}
             </div>
 
             <div className="searchActions">
-  <button
-    type="button"
-    className="outline"
-    onClick={() => checkPrice(asset)}
-    disabled={checkingSymbol === asset.symbol}
-  >
-    {checkingSymbol === asset.symbol ? "Checking..." : "Check Price"}
-  </button>
+              <button
+                type="button"
+                className="outline"
+                onClick={() => checkPrice(asset)}
+                disabled={checkingSymbol === asset.symbol}
+              >
+                {checkingSymbol === asset.symbol ? "Checking..." : "Check Price"}
+              </button>
 
-  <button onClick={() => onAdd(asset)}>
-    Add Asset
-  </button>
-</div>
+              <button onClick={() => onAdd(asset)}>
+                Add Asset
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -1203,7 +1182,7 @@ function ManageAssets({ assets, openAssetForm, editAsset, removeAsset }) {
             <span><b>{a.name}</b></span>
             <span>{TYPE_LABELS[a.asset_type]}</span>
             <span>{a.ticker || "—"}</span>
-            <span>{a.quantity || "—"}</span>
+            <span>{a.asset_type === "cash" ? "—" : (a.quantity || "—")}</span>
             <span>{a.manual_value_thb ? Number(a.manual_value_thb).toLocaleString() : "—"}</span>
             <span className="rightBtns">
               <button className="ghost" onClick={() => editAsset(a)}><Pencil size={15} /></button>
@@ -1360,6 +1339,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
   const [tickerSuggestions, setTickerSuggestions] = useState([]);
   const [searchingTicker, setSearchingTicker] = useState(false);
+  const [savedAssetSuggestions, setSavedAssetSuggestions] = useState([]);
+  const [showSavedAssetSuggestions, setShowSavedAssetSuggestions] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1414,6 +1395,40 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
   function set(key, value) {
     setForm((f) => ({ ...f, [key]: value }));
+
+    if (key === "name") {
+      const q = String(value || "").trim().toLowerCase();
+      const saved = getAssets()
+        .filter((a) => a.asset_type !== "cash")
+        .filter((a) => {
+          if (!q) return true;
+          return (
+            String(a.name || "").toLowerCase().includes(q) ||
+            String(a.ticker || "").toLowerCase().includes(q)
+          );
+        })
+        .slice(0, 8);
+
+      setSavedAssetSuggestions(saved);
+      setShowSavedAssetSuggestions(saved.length > 0);
+    }
+  }
+
+  function selectSavedAsset(asset) {
+    setForm((f) => ({
+      ...f,
+      name: asset.name || "",
+      asset_type: asset.asset_type || "bitcoin",
+      ticker: asset.ticker || defaultTicker(asset.asset_type),
+      current_price_currency: asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type),
+      purchase_currency: asset.purchase_currency || defaultCurrentPriceCurrency(asset.asset_type),
+      use_manual_value:
+        isManualUnitAsset(asset.asset_type) ||
+        ["property", "land", "other"].includes(asset.asset_type),
+      manual_value_thb: asset.manual_value_thb || "",
+      notes: asset.notes || ""
+    }));
+    setShowSavedAssetSuggestions(false);
   }
 
   function changeType(type) {
@@ -1421,9 +1436,11 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       ...f,
       asset_type: type,
       ticker: defaultTicker(type),
+      quantity: type === "cash" ? "" : f.quantity,
       manual_value_thb: "",
       current_price_currency: defaultCurrentPriceCurrency(type),
       purchase_currency: defaultCurrentPriceCurrency(type),
+      purchase_price_per_unit: type === "cash" ? "" : f.purchase_price_per_unit,
       use_manual_value: isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
     }));
   }
@@ -1431,18 +1448,26 @@ function AssetForm({ editingAsset, onClose, onSave }) {
   function submit(e) {
     e.preventDefault();
 
-    const quantity = safeNumber(form.quantity);
+    const quantity = form.asset_type === "cash" ? 0 : safeNumber(form.quantity);
     const manualValue = safeNumber(form.manual_value_thb);
 
     onSave({
       name: form.name.trim(),
       asset_type: form.asset_type,
-      ticker: needsSymbol(form.asset_type) ? String(form.ticker || "").trim().toUpperCase() : "",
+      ticker: form.asset_type === "cash"
+        ? ""
+        : needsSymbol(form.asset_type)
+        ? String(form.ticker || "").trim().toUpperCase()
+        : "",
       quantity,
       manual_value_thb: manualValue,
       current_price_currency: form.current_price_currency || defaultCurrentPriceCurrency(form.asset_type),
-      use_manual_value: isManualUnitAsset(form.asset_type) ? true : !!form.use_manual_value,
-      purchase_price_per_unit: safeNumber(form.purchase_price_per_unit),
+      use_manual_value: form.asset_type === "cash"
+        ? true
+        : isManualUnitAsset(form.asset_type)
+        ? true
+        : !!form.use_manual_value,
+      purchase_price_per_unit: form.asset_type === "cash" ? 0 : safeNumber(form.purchase_price_per_unit),
       purchase_currency: form.purchase_currency,
       notes: form.notes,
       manual_price_updated_at: new Date().toISOString()
@@ -1460,10 +1485,36 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         <label>Asset Name</label>
         <input
           value={form.name}
+          onFocus={() => {
+            if (!editingAsset && form.asset_type !== "cash") {
+              const saved = getAssets().filter((a) => a.asset_type !== "cash").slice(0, 8);
+              setSavedAssetSuggestions(saved);
+              setShowSavedAssetSuggestions(saved.length > 0);
+            }
+          }}
           onChange={(e) => set("name", e.target.value)}
           placeholder="My Bitcoin, SCBS&P500, PTT, Thai gold, condo"
           required
         />
+
+        {!editingAsset && form.asset_type !== "cash" && showSavedAssetSuggestions && savedAssetSuggestions.length > 0 && (
+          <div className="suggestBox">
+            {savedAssetSuggestions.map((asset) => (
+              <button
+                type="button"
+                key={asset.id}
+                className="suggestItem"
+                onClick={() => selectSavedAsset(asset)}
+              >
+                <b>{asset.name}</b>
+                <span>
+                  {TYPE_LABELS[asset.asset_type] || asset.asset_type}
+                  {asset.ticker ? ` · ${asset.ticker}` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <label>Asset Type</label>
         <select value={form.asset_type} onChange={(e) => changeType(e.target.value)}>
@@ -1561,12 +1612,12 @@ function AssetForm({ editingAsset, onClose, onSave }) {
               <option value="USD">USD</option>
             </select>
             <div className="muted small">
-              If cash is USD, the app converts it using live USD/THB.
+              Cash/savings has no buy price and no profit %. Add separate THB and USD balances if needed.
             </div>
           </div>
         )}
 
-        {!isManualUnitAsset(form.asset_type) && (
+        {form.asset_type !== "cash" && !isManualUnitAsset(form.asset_type) && (
           <label className="checkLine">
             <input
               type="checkbox"
@@ -1728,20 +1779,21 @@ function LockScreen({ onUnlock }) {
   const [setupMode, setSetupMode] = useState(!hasPinSet());
   const [error, setError] = useState("");
   const [faceIdEnabled, setFaceIdEnabled] = useState(!!getFaceIdCredential());
+
   useEffect(() => {
-  async function autoFaceId() {
-    if (!faceIdEnabled || setupMode) return;
+    async function autoFaceId() {
+      if (!faceIdEnabled || setupMode) return;
 
-    const ok = await unlockWithFaceId();
+      const ok = await unlockWithFaceId();
 
-    if (ok) {
-      onUnlock();
+      if (ok) {
+        onUnlock();
+      }
     }
-  }
 
-  autoFaceId();
-}, [faceIdEnabled, setupMode]);
-  
+    autoFaceId();
+  }, [faceIdEnabled, setupMode, onUnlock]);
+
   async function submitPin(e) {
     e.preventDefault();
 
