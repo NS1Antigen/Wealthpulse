@@ -99,8 +99,37 @@ const COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"
 function defaultTicker(type) {
   if (type === "bitcoin") return "BTC";
   if (type === "gold") return "XAU";
+  if (type === "international_stock") return "SP500";
+  if (type === "thai_stock") return "PTT.BK";
   return "";
 }
+
+const TICKER_SUGGESTIONS = {
+  international_stock: [
+    "SP500",
+    "NASDAQ",
+    "AAPL",
+    "NVDA",
+    "MSFT",
+    "GOOGL",
+    "TSLA",
+    "SPY",
+    "QQQ"
+  ],
+  thai_stock: [
+    "PTT.BK",
+    "CPALL.BK",
+    "AOT.BK",
+    "KBANK.BK",
+    "SCB.BK",
+    "ADVANC.BK",
+    "BDMS.BK",
+    "DELTA.BK"
+  ],
+  bitcoin: ["BTC"],
+  crypto_other: ["ETH", "SOL", "BNB", "XRP", "ADA", "DOGE"],
+  gold: ["XAU"]
+};
 
 function needsTicker(type) {
   return ["bitcoin", "crypto_other", "thai_stock", "international_stock", "gold"].includes(type);
