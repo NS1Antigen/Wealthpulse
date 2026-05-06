@@ -616,10 +616,41 @@ function AllocationChart({ assets, currency, hidden }) {
   assets.forEach((a) => {
     grouped[a.asset_type] = (grouped[a.asset_type] || 0) + (a.currentValue || 0);
   });
+
+  const total = Object.values(grouped).reduce((s, v) => s + v, 0);
+
   const data = Object.entries(grouped)
     .filter(([, value]) => value > 0)
-    .map(([type, value]) => ({ name: TYPE_LABELS[type] || type, value }))
+    .map(([type, value]) => ({
+      name: TYPE_LABELS[type] || type,
+      value,
+      percent: total > 0 ? (value / total) * 100 : 0
+    }))
     .sort((a, b) => b.value - a.value);
+
+  function renderPieLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent }) {
+    if (!percent || percent < 0.06 || hidden) return null;
+
+    const RADIAN = Math.PI / 180;
+    const radius = innerRadius + (outerRadius - innerRadius) * 0.55;
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+    return (
+      <text
+        x={x}
+        y={y}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="white"
+        fontSize={12}
+        fontWeight={800}
+        style={{ textShadow: "0 1px 3px rgba(0,0,0,0.45)" }}
+      >
+        {`${(percent * 100).toFixed(0)}%`}
+      </text>
+    );
+  }
 
   return (
     <section className="card">
@@ -629,10 +660,31 @@ function AllocationChart({ assets, currency, hidden }) {
           <div className="pieBox">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={data} dataKey="value" innerRadius={55} outerRadius={85} paddingAngle={2}>
+                <Pie
+                  data={data}
+                  dataKey="value"
+                  innerRadius={55}
+                  outerRadius={88}
+                  paddingAngle={2}
+                  labelLine={false}
+                  label={renderPieLabel}
+                >
                   {data.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                 </Pie>
-                <Tooltip formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)} />
+                <Tooltip
+                  formatter={(v, _name, item) =>
+                    hidden
+                      ? "••••••"
+                      : `${formatCurrency(v, currency)} · ${item.payload.percent.toFixed(1)}%`
+                  }
+                  contentStyle={{
+                    background: "var(--card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    boxShadow: "var(--shadow)",
+                    color: "var(--text)"
+                  }}
+                />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -640,7 +692,11 @@ function AllocationChart({ assets, currency, hidden }) {
             {data.map((d, i) => (
               <div className="legendRow" key={d.name}>
                 <span><i style={{ background: COLORS[i % COLORS.length] }} />{d.name}</span>
-                <b>{hidden ? "••••••" : formatCurrency(d.value, currency)}</b>
+                <b>
+                  {hidden
+                    ? "••••••"
+                    : `${formatCurrency(d.value, currency)} · ${d.percent.toFixed(1)}%`}
+                </b>
               </div>
             ))}
           </div>
