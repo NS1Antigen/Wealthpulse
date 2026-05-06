@@ -197,9 +197,9 @@ function valueToThb(value, currency, usdToThb) {
 
 async function fetchLiveUsdToThb(fallback = 34.5) {
   const apis = [
-    "https://open.er-api.com/v6/latest/USD",
-    "https://api.frankfurter.app/latest?from=USD&to=THB"
-  ];
+  "https://api.frankfurter.app/latest?from=USD&to=THB",
+  "https://open.er-api.com/v6/latest/USD"
+];
 
   for (const url of apis) {
     try {
