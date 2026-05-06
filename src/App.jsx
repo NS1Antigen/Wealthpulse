@@ -169,7 +169,6 @@ function getCurrentPriceLabel(type) {
   if (type === "thai_stock") return "Current Price Per Share (THB)";
   if (type === "mutual_fund") return "Current NAV / Price Per Unit (THB)";
   if (type === "international_stock") return "Current Price Per Share / ETF Unit";
-  if (type === "cash") return "Cash / Saving Amount";
   return "Manual Current Total Value (THB)";
 }
 
@@ -227,13 +226,6 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
   if (isManualUnitAsset(asset.asset_type)) {
     const unitCurrency = asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
     return valueToThb(qty * manual, unitCurrency, usdToThb);
-  }
-
-  // Cash/saving: amount can be THB or USD.
-  if (asset.asset_type === "cash") {
-    return asset.purchase_currency === "USD"
-      ? manual * usdToThb
-      : manual;
   }
 
   // Manual total assets: value = manual total value in THB.
@@ -492,6 +484,7 @@ function App() {
       current_price_currency: data.current_price_currency || existing.current_price_currency,
       manual_value_thb: data.manual_value_thb,
       use_manual_value: data.use_manual_value,
+      manual_price_updated_at: data.manual_price_updated_at,
       transactions
     });
   } else {
@@ -603,6 +596,7 @@ function Dashboard(props) {
               <AssetItem
                 key={asset.id}
                 asset={asset}
+                portfolioTotal={totalValue}
                 priceData={prices[asset.ticker]}
                 currency={currency}
                 hidden={hidden}
@@ -659,8 +653,14 @@ function AllocationChart({ assets, currency, hidden }) {
 function Analytics({ assets, currency, hidden }) {
   const totalCost = assets.reduce((s, a) => s + (a.costValue || 0), 0);
   const totalValue = assets.reduce((s, a) => s + (a.currentValue || 0), 0);
-  const pnl = totalValue - totalCost;
-  const pct = totalCost > 0 ? (pnl / totalCost) * 100 : 0;
+
+  // Exclude cash from Unrealized P&L because cash is not an investment gain/loss asset.
+  const nonCashAssets = assets.filter((a) => a.asset_type !== "cash");
+  const nonCashCost = nonCashAssets.reduce((s, a) => s + (a.costValue || 0), 0);
+  const nonCashValue = nonCashAssets.reduce((s, a) => s + (a.currentValue || 0), 0);
+  const pnl = nonCashValue - nonCashCost;
+  const pct = nonCashCost > 0 ? (pnl / nonCashCost) * 100 : 0;
+
   const top = [...assets].sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0))[0];
   const concentration = top && totalValue > 0 ? (top.currentValue / totalValue) * 100 : 0;
 
@@ -751,9 +751,13 @@ function recalculateAssetFromTransactions(asset, transactions) {
   };
 }
 
-function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
+function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portfolioTotal }) {
   const Icon = TYPE_ICONS[asset.asset_type] || Wallet;
   const [showTx, setShowTx] = useState(false);
+  const allocationPct =
+    Number(portfolioTotal) > 0
+      ? ((Number(asset.currentValue) || 0) / Number(portfolioTotal)) * 100
+      : 0;
   const pnl = (Number(asset.currentValue) || 0) - (Number(asset.costValue) || 0);
 const pnlPct =
   Number(asset.costValue) > 0
@@ -784,9 +788,16 @@ const pnlPct =
         <div className="muted small">
           {TYPE_LABELS[asset.asset_type] || asset.asset_type}
           {asset.ticker ? ` · ${asset.ticker}` : ""}
+          {` · ${allocationPct.toFixed(1)}% of portfolio`}
           {asset.quantity ? ` · ${asset.quantity} units` : ""}
           {priceData ? ` · ${priceData.source}` : ""}
         </div>
+
+        {asset.manual_price_updated_at && (
+          <div className="muted small">
+            Manual price updated: {new Date(asset.manual_price_updated_at).toLocaleString()}
+          </div>
+        )}
 
         {asset.cost_incomplete && (
           <div className="red small">Cost incomplete: some buy price missing</div>
@@ -1169,7 +1180,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
     use_manual_value: !!editingAsset?.use_manual_value,
     purchase_price_per_unit: editingAsset?.purchase_price_per_unit || "",
     purchase_currency: editingAsset?.purchase_currency || "THB",
-    notes: editingAsset?.notes || ""
+    notes: editingAsset?.notes || "",
+    manual_price_updated_at: editingAsset?.manual_price_updated_at || null
   }));
 
   const [tickerSuggestions, setTickerSuggestions] = useState([]);
@@ -1258,7 +1270,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       use_manual_value: isManualUnitAsset(form.asset_type) ? true : !!form.use_manual_value,
       purchase_price_per_unit: safeNumber(form.purchase_price_per_unit),
       purchase_currency: form.purchase_currency,
-      notes: form.notes
+      notes: form.notes,
+      manual_price_updated_at: new Date().toISOString()
     });
   }
 
@@ -1344,8 +1357,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
             form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
             form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
             form.asset_type === "international_stock" ? "Example: 210 = current price/share" :
-            form.asset_type === "cash" ? "Example: 100000 = cash amount" :
-            "Use for property/manual fallback"
+            "Use for property/cash/manual fallback"
           }
         />
 
@@ -1363,22 +1375,6 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </div>
         )}
 
-        {form.asset_type === "cash" && (
-          <div>
-            <label>Cash Currency</label>
-            <select
-              value={form.purchase_currency}
-              onChange={(e) => set("purchase_currency", e.target.value)}
-            >
-              <option value="THB">THB</option>
-              <option value="USD">USD</option>
-            </select>
-            <div className="muted small">
-              If cash is USD, the app converts it using live USD/THB.
-            </div>
-          </div>
-        )}
-
         {!isManualUnitAsset(form.asset_type) && (
           <label className="checkLine">
             <input
@@ -1390,32 +1386,36 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </label>
         )}
 
-        {form.asset_type !== "cash" && (
-          <div className="twoCols">
-            <div>
-              <label>{getBuyPriceLabel(form.asset_type)}</label>
-              <input
-                type="number"
-                step="any"
-                value={form.purchase_price_per_unit}
-                onChange={(e) => set("purchase_price_per_unit", e.target.value)}
-                placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
-              />
-            </div>
-            <div>
-              <label>Purchase Currency</label>
-              <select value={form.purchase_currency} onChange={(e) => set("purchase_currency", e.target.value)}>
-                <option value="THB">THB</option>
-                <option value="USD">USD</option>
-              </select>
-            </div>
+        <div className="twoCols">
+          <div>
+            <label>{getBuyPriceLabel(form.asset_type)}</label>
+            <input
+              type="number"
+              step="any"
+              value={form.purchase_price_per_unit}
+              onChange={(e) => set("purchase_price_per_unit", e.target.value)}
+              placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
+            />
           </div>
-        )}
+          <div>
+            <label>Purchase Currency</label>
+            <select value={form.purchase_currency} onChange={(e) => set("purchase_currency", e.target.value)}>
+              <option value="THB">THB</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+        </div>
 
         {isManualUnitAsset(form.asset_type) && (
           <p className="muted small">
             Calculation: quantity × current price. Buy price is used only for cost basis and P&L.
           </p>
+        )}
+
+        {form.manual_price_updated_at && (
+          <div className="muted small">
+            Manual price updated: {new Date(form.manual_price_updated_at).toLocaleString()}
+          </div>
         )}
 
         <label>Notes</label>
