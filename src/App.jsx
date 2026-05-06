@@ -645,6 +645,39 @@ function Security({ theme, setTheme, refreshAssets, setAssets, setTimeline, setU
   );
 }
 
+async function searchTickerSuggestions(query, assetType) {
+  const q = String(query || "").trim();
+  if (q.length < 2) return [];
+
+  try {
+    const res = await fetch(
+      `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=8&newsCount=0`
+    );
+
+    if (!res.ok) throw new Error("Ticker search failed");
+
+    const data = await res.json();
+
+    return (data.quotes || [])
+      .filter((item) => item.symbol && item.shortname)
+      .map((item) => ({
+        symbol: item.symbol,
+        name: item.shortname || item.longname || item.symbol,
+        exchange: item.exchange || "",
+        type: item.quoteType || "",
+      }))
+      .filter((item) => {
+        if (assetType === "thai_stock") return item.symbol.endsWith(".BK");
+        if (assetType === "international_stock") return !item.symbol.endsWith(".BK");
+        return true;
+      })
+      .slice(0, 8);
+  } catch (err) {
+    console.warn("Ticker search failed:", err);
+    return [];
+  }
+}
+
 function AssetForm({ editingAsset, onClose, onSave }) {
   const [form, setForm] = useState(() => ({
     name: editingAsset?.name || "",
@@ -658,6 +691,41 @@ function AssetForm({ editingAsset, onClose, onSave }) {
     notes: editingAsset?.notes || ""
   }));
 
+  const [tickerSuggestions, setTickerSuggestions] = useState([]);
+  const [searchingTicker, setSearchingTicker] = useState(false);
+  useEffect(() => {
+  let cancelled = false;
+
+  async function runSearch() {
+    if (!needsTicker(form.asset_type)) {
+      setTickerSuggestions([]);
+      return;
+    }
+
+    const q = String(form.ticker || "").trim();
+
+    if (q.length < 2) {
+      setTickerSuggestions([]);
+      return;
+    }
+
+    setSearchingTicker(true);
+    const results = await searchTickerSuggestions(q, form.asset_type);
+
+    if (!cancelled) {
+      setTickerSuggestions(results);
+      setSearchingTicker(false);
+    }
+  }
+
+  const timer = setTimeout(runSearch, 350);
+
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+  };
+}, [form.ticker, form.asset_type]);
+  
   function set(key, value) {
     setForm((f) => ({ ...f, [key]: value }));
   }
@@ -704,12 +772,35 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         {needsTicker(form.asset_type) && (
           <>
             <label>Ticker Symbol</label>
-            <input
+
+<input
   value={form.ticker}
   onChange={(e) => set("ticker", e.target.value.toUpperCase())}
-  placeholder="BTC, AAPL, SP500, PTT.BK"
-  list="ticker-suggestions"
+  placeholder="Type name or ticker e.g. apple, ptt, tesla, btc"
 />
+
+{searchingTicker && (
+  <div className="muted small">Searching ticker...</div>
+)}
+
+{tickerSuggestions.length > 0 && (
+  <div className="suggestBox">
+    {tickerSuggestions.map((item) => (
+      <button
+        type="button"
+        key={`${item.symbol}-${item.exchange}`}
+        className="suggestItem"
+        onClick={() => {
+          set("ticker", item.symbol.toUpperCase());
+          setTickerSuggestions([]);
+        }}
+      >
+        <b>{item.symbol}</b>
+        <span>{item.name}</span>
+      </button>
+    ))}
+  </div>
+)}
 
 <datalist id="ticker-suggestions">
   {(TICKER_SUGGESTIONS[form.asset_type] || []).map((ticker) => (
