@@ -703,7 +703,18 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         {needsTicker(form.asset_type) && (
           <>
             <label>Ticker Symbol</label>
-            <input value={form.ticker} onChange={(e) => set("ticker", e.target.value.toUpperCase())} placeholder="BTC, AAPL, SP500, PTT.BK" />
+            <input
+  value={form.ticker}
+  onChange={(e) => set("ticker", e.target.value.toUpperCase())}
+  placeholder="BTC, AAPL, SP500, PTT.BK"
+  list="ticker-suggestions"
+/>
+
+<datalist id="ticker-suggestions">
+  {(TICKER_SUGGESTIONS[form.asset_type] || []).map((ticker) => (
+    <option key={ticker} value={ticker} />
+  ))}
+</datalist>
 
             <label>Quantity / Units</label>
             <input type="number" step="any" value={form.quantity} onChange={(e) => set("quantity", e.target.value)} placeholder="0.1, 10, 100" />
