@@ -691,7 +691,50 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
 }
 function SearchAssetPage({ onAdd }) {
   const [query, setQuery] = useState("");
+  const [verifiedPrices, setVerifiedPrices] = useState({});
+const [checkingSymbol, setCheckingSymbol] = useState(null);
 
+async function checkPrice(asset) {
+  setCheckingSymbol(asset.symbol);
+
+  const fakeAsset = {
+    name: asset.name,
+    asset_type: asset.asset_type,
+    ticker: asset.symbol,
+    quantity: 1,
+    manual_value_thb: 0
+  };
+
+  try {
+    const result = await fetchAllPrices([fakeAsset]);
+    const priceData = result.prices[asset.symbol];
+
+    setVerifiedPrices((old) => ({
+      ...old,
+      [asset.symbol]: priceData
+        ? {
+            ok: true,
+            price: priceData.price,
+            currency: priceData.currency,
+            source: priceData.source || "Price API"
+          }
+        : {
+            ok: false,
+            source: "Price unavailable"
+          }
+    }));
+  } catch {
+    setVerifiedPrices((old) => ({
+      ...old,
+      [asset.symbol]: {
+        ok: false,
+        source: "Price check failed"
+      }
+    }));
+  }
+
+  setCheckingSymbol(null);
+}
   const LOCAL_ASSETS = [
     // Crypto
     { symbol: "BTC", name: "Bitcoin", asset_type: "bitcoin", source: "CoinGecko", currency: "USD" },
@@ -768,11 +811,29 @@ function SearchAssetPage({ onAdd }) {
               <div className="muted small">
                 {TYPE_LABELS[asset.asset_type] || asset.asset_type} · {asset.source}
               </div>
+              {verifiedPrices[asset.symbol] && (
+  <div className={verifiedPrices[asset.symbol].ok ? "green small" : "red small"}>
+    {verifiedPrices[asset.symbol].ok
+      ? `Verified: ${verifiedPrices[asset.symbol].price} ${verifiedPrices[asset.symbol].currency} · ${verifiedPrices[asset.symbol].source}`
+      : verifiedPrices[asset.symbol].source}
+  </div>
+)}
             </div>
 
-            <button onClick={() => onAdd(asset)}>
-              Add Asset
-            </button>
+            <div className="searchActions">
+  <button
+    type="button"
+    className="outline"
+    onClick={() => checkPrice(asset)}
+    disabled={checkingSymbol === asset.symbol}
+  >
+    {checkingSymbol === asset.symbol ? "Checking..." : "Check Price"}
+  </button>
+
+  <button onClick={() => onAdd(asset)}>
+    Add Asset
+  </button>
+</div>
           </div>
         ))}
       </div>
