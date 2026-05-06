@@ -68,13 +68,23 @@ const ASSET_TYPES = [
   { value: "crypto_other", label: "Other Crypto" },
   { value: "thai_stock", label: "Thai Stock" },
   { value: "international_stock", label: "International Stock / Index" },
+  { value: "mutual_fund", label: "Mutual Fund" },
   { value: "gold", label: "Gold Spot" },
   { value: "property", label: "Property / Condo" },
   { value: "land", label: "Land" },
   { value: "cash", label: "Cash / Savings" },
   { value: "other", label: "Other" }
 ];
-
+const MUTUAL_FUND_DATABASE = [
+  { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", amc: "SCBAM" },
+  { symbol: "SCBNDQ", name: "SCB Nasdaq 100 Fund", amc: "SCBAM" },
+  { symbol: "SCBUSA", name: "SCB US Equity Fund", amc: "SCBAM" },
+  { symbol: "SCBGOLD", name: "SCB Gold Fund", amc: "SCBAM" },
+  { symbol: "K-USA", name: "K US Equity Fund", amc: "KAsset" },
+  { symbol: "K-USXNDQ", name: "K US Nasdaq 100 Index Fund", amc: "KAsset" },
+  { symbol: "KFUS", name: "Krungsri US Equity Fund", amc: "Krungsri" },
+  { symbol: "TMBUS500", name: "TMB US500 Equity Index Fund", amc: "Eastspring" }
+];
 const TYPE_LABELS = Object.fromEntries(ASSET_TYPES.map((a) => [a.value, a.label.replace(/^.. /, "")]));
 
 const TYPE_ICONS = {
@@ -130,7 +140,7 @@ const TICKER_SUGGESTIONS = {
 };
 
 function needsTicker(type) {
-  return ["bitcoin", "crypto_other", "thai_stock", "international_stock", "gold"].includes(type);
+  return ["bitcoin", "crypto_other", "thai_stock", "international_stock", "mutual_fund", "gold"].includes(type);
 }
 
 function App() {
@@ -740,7 +750,24 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       setTickerSuggestions([]);
       return;
     }
+    if (form.asset_type === "mutual_fund") {
+  const q = String(form.ticker || "").toLowerCase();
 
+  const results = MUTUAL_FUND_DATABASE.filter((fund) =>
+    fund.symbol.toLowerCase().includes(q) ||
+    fund.name.toLowerCase().includes(q) ||
+    fund.amc.toLowerCase().includes(q)
+  ).map((fund) => ({
+    symbol: fund.symbol,
+    name: `${fund.name} · ${fund.amc}`,
+    exchange: "Thai Mutual Fund"
+  }));
+
+  setTickerSuggestions(results);
+  setSearchingTicker(false);
+  return;
+}
+    
     setSearchingTicker(true);
     const results = await searchTickerSuggestions(q, form.asset_type);
 
