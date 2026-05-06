@@ -141,7 +141,7 @@ const TICKER_SUGGESTIONS = {
 };
 
 function needsLiveTicker(type) {
-  return ["bitcoin", "crypto_other", "international_stock"].includes(type);
+  return ["bitcoin", "crypto_other"].includes(type);
 }
 
 function needsSymbol(type) {
@@ -153,13 +153,14 @@ function needsQuantity(type) {
 }
 
 function isManualUnitAsset(type) {
-  return ["thai_stock", "mutual_fund", "thai_gold"].includes(type);
+  return ["international_stock", "thai_stock", "mutual_fund", "thai_gold"].includes(type);
 }
 
 function getUnitLabel(type) {
   if (type === "thai_gold") return "Gold Weight (Baht / บาททอง)";
-  if (type === "mutual_fund") return "Units";
+  if (type === "mutual_fund") return "Fund Units";
   if (type === "thai_stock") return "Shares";
+  if (type === "international_stock") return "Shares / ETF Units";
   return "Quantity / Units";
 }
 
@@ -167,13 +168,15 @@ function getCurrentPriceLabel(type) {
   if (type === "thai_gold") return "Current Gold Price Per Baht (THB)";
   if (type === "thai_stock") return "Current Price Per Share (THB)";
   if (type === "mutual_fund") return "Current NAV / Price Per Unit (THB)";
-  return "Manual Current Value THB";
+  if (type === "international_stock") return "Current Price Per Share / ETF Unit";
+  return "Manual Current Total Value (THB)";
 }
 
 function getBuyPriceLabel(type) {
   if (type === "thai_gold") return "Buy Price Per Baht (THB)";
   if (type === "thai_stock") return "Buy Price Per Share";
   if (type === "mutual_fund") return "Buy NAV / Price Per Unit";
+  if (type === "international_stock") return "Buy Price Per Share / ETF Unit";
   return "Buy Price / Unit";
 }
 
@@ -182,25 +185,62 @@ function safeNumber(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function defaultCurrentPriceCurrency(type) {
+  if (type === "international_stock") return "USD";
+  return "THB";
+}
+
+function valueToThb(value, currency, usdToThb) {
+  return currency === "USD" ? value * usdToThb : value;
+}
+
+async function fetchLiveUsdToThb(fallback = 34.5) {
+  const apis = [
+    "https://open.er-api.com/v6/latest/USD",
+    "https://api.frankfurter.app/latest?from=USD&to=THB"
+  ];
+
+  for (const url of apis) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const rate = data?.rates?.THB;
+      if (Number.isFinite(Number(rate)) && Number(rate) > 0) {
+        return Number(rate);
+      }
+    } catch (err) {
+      console.warn("USD/THB fetch failed:", err);
+    }
+  }
+
+  return fallback;
+}
+
 function getAssetCurrentValueThb(asset, prices, usdToThb) {
   const qty = safeNumber(asset.quantity);
   const manual = safeNumber(asset.manual_value_thb);
 
-  if (asset.asset_type === "thai_stock" || asset.asset_type === "mutual_fund" || asset.asset_type === "thai_gold") {
-    return qty * manual;
+  // Manual unit assets: value = quantity × current price per unit.
+  // International stocks can be entered in USD and converted to THB automatically.
+  if (isManualUnitAsset(asset.asset_type)) {
+    const unitCurrency = asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
+    return valueToThb(qty * manual, unitCurrency, usdToThb);
   }
 
+  // Manual total assets: value = manual total value in THB.
   if (asset.use_manual_value || !needsLiveTicker(asset.asset_type)) {
     return manual;
   }
 
+  // Live ticker assets: Bitcoin/crypto price from API × quantity, converted by live USD/THB.
   const priceData = prices?.[asset.ticker];
   const livePrice = safeNumber(priceData?.price);
   if (!livePrice || !qty) return manual;
 
-  const priceCurrency = priceData?.currency || (asset.asset_type === "bitcoin" || asset.asset_type === "crypto_other" || asset.asset_type === "international_stock" ? "USD" : "THB");
+  const priceCurrency = priceData?.currency || "USD";
   const value = qty * livePrice;
-  return priceCurrency === "USD" ? value * usdToThb : value;
+  return valueToThb(value, priceCurrency, usdToThb);
 }
 
 function getAssetCostValueThb(asset, usdToThb) {
@@ -244,25 +284,32 @@ function App() {
 
   async function refreshPrices() {
     const currentAssets = getAssets();
-    if (currentAssets.length === 0) return;
     setLoading(true);
     try {
-      const result = await fetchAllPrices(currentAssets);
-      setPrices(result.prices);
-      setUsdToThb(result.usdToThb);
+      const liveUsdToThb = await fetchLiveUsdToThb(usdToThb);
+      const liveAssets = currentAssets.filter((a) => needsLiveTicker(a.asset_type));
+      const result = liveAssets.length > 0
+        ? await fetchAllPrices(liveAssets)
+        : { prices: {}, usdToThb: liveUsdToThb };
+
+      const finalUsdToThb = liveUsdToThb || result.usdToThb || usdToThb;
+      const finalPrices = result.prices || {};
+
+      setPrices(finalPrices);
+      setUsdToThb(finalUsdToThb);
       setLastUpdated(new Date().toISOString());
-      saveSnapshot(result.prices, result.usdToThb);
+      saveSnapshot(finalPrices, finalUsdToThb);
 
       const withValues = currentAssets.map((a) => ({
         ...a,
-        currentValueThb: getAssetCurrentValueThb(a, result.prices, result.usdToThb)
+        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb)
       }));
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
       const breakdown = {};
       withValues.forEach((a) => {
         breakdown[a.asset_type] = (breakdown[a.asset_type] || 0) + a.currentValueThb;
       });
-      addTimelineEntry(totalThb, totalThb / result.usdToThb, breakdown);
+      addTimelineEntry(totalThb, totalThb / finalUsdToThb, breakdown);
       setTimeline(getTimeline());
     } finally {
       setLoading(false);
@@ -333,9 +380,10 @@ function App() {
         ticker: asset.symbol,
         quantity: "",
         purchase_price_per_unit: "",
-        purchase_currency: asset.currency || "THB",
+        purchase_currency: asset.currency || defaultCurrentPriceCurrency(asset.asset_type),
+        current_price_currency: defaultCurrentPriceCurrency(asset.asset_type),
         manual_value_thb: "",
-        use_manual_value: false,
+        use_manual_value: isManualUnitAsset(asset.asset_type),
         notes: ""
       });
     }}
@@ -433,6 +481,9 @@ function App() {
       quantity: totalQty,
       purchase_price_per_unit: avgCost,
       cost_incomplete: knownQty < totalQty,
+      current_price_currency: data.current_price_currency || existing.current_price_currency,
+      manual_value_thb: data.manual_value_thb,
+      use_manual_value: data.use_manual_value,
       transactions
     });
   } else {
@@ -505,6 +556,7 @@ function Dashboard(props) {
             <div className="bigMoney">{hidden ? "••••••••" : formatCurrency(totalValue, currency)}</div>
             <div className="muted small">
               {lastUpdated ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : "Using saved/manual prices"}
+              {` · USD/THB: ${Number(usdToThb || 0).toFixed(4)}`}
             </div>
           </div>
 
@@ -1094,6 +1146,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
     ticker: editingAsset?.ticker || defaultTicker(editingAsset?.asset_type || "bitcoin"),
     quantity: editingAsset?.quantity || "",
     manual_value_thb: editingAsset?.manual_value_thb || "",
+    current_price_currency: editingAsset?.current_price_currency || defaultCurrentPriceCurrency(editingAsset?.asset_type || "bitcoin"),
     use_manual_value: !!editingAsset?.use_manual_value,
     purchase_price_per_unit: editingAsset?.purchase_price_per_unit || "",
     purchase_currency: editingAsset?.purchase_currency || "THB",
@@ -1164,6 +1217,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       asset_type: type,
       ticker: defaultTicker(type),
       manual_value_thb: "",
+      current_price_currency: defaultCurrentPriceCurrency(type),
+      purchase_currency: defaultCurrentPriceCurrency(type),
       use_manual_value: isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
     }));
   }
@@ -1180,6 +1235,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       ticker: needsSymbol(form.asset_type) ? String(form.ticker || "").trim().toUpperCase() : "",
       quantity,
       manual_value_thb: manualValue,
+      current_price_currency: form.current_price_currency || defaultCurrentPriceCurrency(form.asset_type),
       use_manual_value: isManualUnitAsset(form.asset_type) ? true : !!form.use_manual_value,
       purchase_price_per_unit: safeNumber(form.purchase_price_per_unit),
       purchase_currency: form.purchase_currency,
@@ -1268,9 +1324,24 @@ function AssetForm({ editingAsset, onClose, onSave }) {
             form.asset_type === "thai_gold" ? "Example: 52000 = current gold price per baht" :
             form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
             form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
+            form.asset_type === "international_stock" ? "Example: 210 = current price/share" :
             "Use for property/cash/manual fallback"
           }
         />
+
+        {form.asset_type === "international_stock" && (
+          <div>
+            <label>Current Price Currency</label>
+            <select
+              value={form.current_price_currency}
+              onChange={(e) => set("current_price_currency", e.target.value)}
+            >
+              <option value="USD">USD</option>
+              <option value="THB">THB</option>
+            </select>
+            <div className="muted small">If your stock price is in USD, the app converts it using the live USD/THB rate.</div>
+          </div>
+        )}
 
         {!isManualUnitAsset(form.asset_type) && (
           <label className="checkLine">
