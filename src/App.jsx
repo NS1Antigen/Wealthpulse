@@ -169,6 +169,7 @@ function getCurrentPriceLabel(type) {
   if (type === "thai_stock") return "Current Price Per Share (THB)";
   if (type === "mutual_fund") return "Current NAV / Price Per Unit (THB)";
   if (type === "international_stock") return "Current Price Per Share / ETF Unit";
+  if (type === "cash") return "Cash / Saving Amount";
   return "Manual Current Total Value (THB)";
 }
 
@@ -226,6 +227,13 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
   if (isManualUnitAsset(asset.asset_type)) {
     const unitCurrency = asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
     return valueToThb(qty * manual, unitCurrency, usdToThb);
+  }
+
+  // Cash/saving: amount can be THB or USD.
+  if (asset.asset_type === "cash") {
+    return asset.purchase_currency === "USD"
+      ? manual * usdToThb
+      : manual;
   }
 
   // Manual total assets: value = manual total value in THB.
@@ -616,31 +624,117 @@ function AllocationChart({ assets, currency, hidden }) {
   assets.forEach((a) => {
     grouped[a.asset_type] = (grouped[a.asset_type] || 0) + (a.currentValue || 0);
   });
+
+  const total = Object.values(grouped).reduce((s, v) => s + v, 0);
+
   const data = Object.entries(grouped)
     .filter(([, value]) => value > 0)
-    .map(([type, value]) => ({ name: TYPE_LABELS[type] || type, value }))
+    .map(([type, value]) => ({
+      name: TYPE_LABELS[type] || type,
+      value,
+      percent: total > 0 ? (value / total) * 100 : 0
+    }))
     .sort((a, b) => b.value - a.value);
 
   return (
     <section className="card">
-      <h2>Asset Allocation</h2>
+      <div className="row">
+        <div>
+          <h2>Asset Allocation</h2>
+          <p className="muted small" style={{ marginBottom: 0 }}>
+            Portfolio weight by asset type
+          </p>
+        </div>
+      </div>
+
       {data.length === 0 ? <p className="muted">No assets yet</p> : (
         <div className="chartWrap">
-          <div className="pieBox">
+          <div className="pieBox" style={{ position: "relative" }}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={data} dataKey="value" innerRadius={55} outerRadius={85} paddingAngle={2}>
+                <Pie
+                  data={data}
+                  dataKey="value"
+                  innerRadius={58}
+                  outerRadius={88}
+                  paddingAngle={3}
+                  labelLine={false}
+                  label={false}
+                >
                   {data.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                 </Pie>
-                <Tooltip formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)} />
+                <Tooltip
+                  formatter={(v, _name, item) =>
+                    hidden
+                      ? "••••••"
+                      : `${formatCurrency(v, currency)} · ${item.payload.percent.toFixed(1)}%`
+                  }
+                  contentStyle={{
+                    background: "var(--card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    boxShadow: "var(--shadow)",
+                    color: "var(--text)"
+                  }}
+                  itemStyle={{ color: "var(--text)" }}
+                  labelStyle={{ color: "var(--muted)", fontSize: 12 }}
+                />
               </PieChart>
             </ResponsiveContainer>
+
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                pointerEvents: "none"
+              }}
+            >
+              <div className="muted small">Total</div>
+              <div style={{ fontWeight: 850, fontSize: 18 }}>
+                {hidden ? "••••" : "100%"}
+              </div>
+            </div>
           </div>
-          <div className="legend">
+
+          <div className="legend" style={{ gap: 12 }}>
             {data.map((d, i) => (
-              <div className="legendRow" key={d.name}>
-                <span><i style={{ background: COLORS[i % COLORS.length] }} />{d.name}</span>
-                <b>{hidden ? "••••••" : formatCurrency(d.value, currency)}</b>
+              <div key={d.name} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="legendRow">
+                  <span><i style={{ background: COLORS[i % COLORS.length] }} />{d.name}</span>
+                  <b>
+                    {hidden
+                      ? "••••••"
+                      : `${d.percent.toFixed(1)}%`}
+                  </b>
+                </div>
+
+                <div
+                  style={{
+                    width: "100%",
+                    height: 8,
+                    borderRadius: 999,
+                    background: "color-mix(in srgb, var(--muted) 14%, transparent)",
+                    overflow: "hidden"
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${Math.max(2, Math.min(100, d.percent))}%`,
+                      height: "100%",
+                      borderRadius: 999,
+                      background: COLORS[i % COLORS.length],
+                      transition: "width 400ms ease"
+                    }}
+                  />
+                </div>
+
+                <div className="muted small" style={{ textAlign: "right" }}>
+                  {hidden ? "••••••" : formatCurrency(d.value, currency)}
+                </div>
               </div>
             ))}
           </div>
@@ -1436,7 +1530,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
             form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
             form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
             form.asset_type === "international_stock" ? "Example: 210 = current price/share" :
-            "Use for property/cash/manual fallback"
+            form.asset_type === "cash" ? "Example: 100000 = cash amount" :
+            "Use for property/manual fallback"
           }
         />
 
@@ -1454,6 +1549,22 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </div>
         )}
 
+        {form.asset_type === "cash" && (
+          <div>
+            <label>Cash Currency</label>
+            <select
+              value={form.purchase_currency}
+              onChange={(e) => set("purchase_currency", e.target.value)}
+            >
+              <option value="THB">THB</option>
+              <option value="USD">USD</option>
+            </select>
+            <div className="muted small">
+              If cash is USD, the app converts it using live USD/THB.
+            </div>
+          </div>
+        )}
+
         {!isManualUnitAsset(form.asset_type) && (
           <label className="checkLine">
             <input
@@ -1465,25 +1576,27 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </label>
         )}
 
-        <div className="twoCols">
-          <div>
-            <label>{getBuyPriceLabel(form.asset_type)}</label>
-            <input
-              type="number"
-              step="any"
-              value={form.purchase_price_per_unit}
-              onChange={(e) => set("purchase_price_per_unit", e.target.value)}
-              placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
-            />
+        {form.asset_type !== "cash" && (
+          <div className="twoCols">
+            <div>
+              <label>{getBuyPriceLabel(form.asset_type)}</label>
+              <input
+                type="number"
+                step="any"
+                value={form.purchase_price_per_unit}
+                onChange={(e) => set("purchase_price_per_unit", e.target.value)}
+                placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
+              />
+            </div>
+            <div>
+              <label>Purchase Currency</label>
+              <select value={form.purchase_currency} onChange={(e) => set("purchase_currency", e.target.value)}>
+                <option value="THB">THB</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label>Purchase Currency</label>
-            <select value={form.purchase_currency} onChange={(e) => set("purchase_currency", e.target.value)}>
-              <option value="THB">THB</option>
-              <option value="USD">USD</option>
-            </select>
-          </div>
-        </div>
+        )}
 
         {isManualUnitAsset(form.asset_type) && (
           <p className="muted small">
