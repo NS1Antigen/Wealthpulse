@@ -857,7 +857,20 @@ function LockScreen({ onUnlock }) {
   const [setupMode, setSetupMode] = useState(!hasPinSet());
   const [error, setError] = useState("");
   const [faceIdEnabled, setFaceIdEnabled] = useState(!!getFaceIdCredential());
+  useEffect(() => {
+  async function autoFaceId() {
+    if (!faceIdEnabled || setupMode) return;
 
+    const ok = await unlockWithFaceId();
+
+    if (ok) {
+      onUnlock();
+    }
+  }
+
+  autoFaceId();
+}, [faceIdEnabled, setupMode]);
+  
   async function submitPin(e) {
     e.preventDefault();
 
