@@ -1086,17 +1086,23 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
   function submit(e) {
     e.preventDefault();
-    onSave({
-      name: form.name.trim(),
-      asset_type: form.asset_type,
-      ticker: needsTicker(form.asset_type) ? String(form.ticker || "").trim().toUpperCase() : "",
-      quantity: Number(form.quantity) || 0,
-      manual_value_thb: Number(form.manual_value_thb) || 0,
-      use_manual_value: !!form.use_manual_value,
-      purchase_price_per_unit: Number(form.purchase_price_per_unit) || 0,
-      purchase_currency: form.purchase_currency,
-      notes: form.notes
-    });
+    const quantity = Number(form.quantity) || 0;
+const manualInput = Number(form.manual_value_thb) || 0;
+
+onSave({
+  name: form.name.trim(),
+  asset_type: form.asset_type,
+  ticker: needsTicker(form.asset_type) ? String(form.ticker || "").trim().toUpperCase() : "",
+  quantity,
+  manual_value_thb:
+    form.asset_type === "thai_gold"
+      ? quantity * manualInput
+      : manualInput,
+  use_manual_value: !!form.use_manual_value,
+  purchase_price_per_unit: Number(form.purchase_price_per_unit) || 0,
+  purchase_currency: form.purchase_currency,
+  notes: form.notes
+});
   }
 
   return (
@@ -1154,13 +1160,37 @@ function AssetForm({ editingAsset, onClose, onSave }) {
   ))}
 </datalist>
 
-            <label>Quantity / Units</label>
-            <input type="number" step="any" value={form.quantity} onChange={(e) => set("quantity", e.target.value)} placeholder="0.1, 10, 100" />
+            <label>
+  {form.asset_type === "thai_gold"
+    ? "Gold Weight (Baht)"
+    : "Quantity / Units"}
+</label>
+<input
+  type="number"
+  step="any"
+  value={form.quantity}
+  onChange={(e) => set("quantity", e.target.value)}
+  placeholder={form.asset_type === "thai_gold" ? "Example: 1, 2, 5" : "0.1, 10, 100"}
+/>
           </>
         )}
 
-        <label>Manual Current Value THB</label>
-        <input type="number" step="any" value={form.manual_value_thb} onChange={(e) => set("manual_value_thb", e.target.value)} placeholder="Use for property/manual override/fallback" />
+        <label>
+  {form.asset_type === "thai_gold"
+    ? "Current Gold Price Per Baht (THB)"
+    : "Manual Current Value THB"}
+</label>
+<input
+  type="number"
+  step="any"
+  value={form.manual_value_thb}
+  onChange={(e) => set("manual_value_thb", e.target.value)}
+  placeholder={
+    form.asset_type === "thai_gold"
+      ? "Example: 52000"
+      : "Use for property/manual override/fallback"
+  }
+/>
 
         <label className="checkLine">
           <input type="checkbox" checked={form.use_manual_value} onChange={(e) => set("use_manual_value", e.target.checked)} />
@@ -1169,8 +1199,18 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
         <div className="twoCols">
           <div>
-            <label>Purchase Price / Unit</label>
-            <input type="number" step="any" value={form.purchase_price_per_unit} onChange={(e) => set("purchase_price_per_unit", e.target.value)} placeholder="Optional" />
+            <label>
+  {form.asset_type === "thai_gold"
+    ? "Purchase Price Per Baht"
+    : "Purchase Price / Unit"}
+</label>
+<input
+  type="number"
+  step="any"
+  value={form.purchase_price_per_unit}
+  onChange={(e) => set("purchase_price_per_unit", e.target.value)}
+  placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
+/>
           </div>
           <div>
             <label>Purchase Currency</label>
