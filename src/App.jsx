@@ -169,6 +169,7 @@ function getCurrentPriceLabel(type) {
   if (type === "thai_stock") return "Current Price Per Share (THB)";
   if (type === "mutual_fund") return "Current NAV / Price Per Unit (THB)";
   if (type === "international_stock") return "Current Price Per Share / ETF Unit";
+  if (type === "cash") return "Cash / Saving Amount";
   return "Manual Current Total Value (THB)";
 }
 
@@ -226,6 +227,13 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
   if (isManualUnitAsset(asset.asset_type)) {
     const unitCurrency = asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
     return valueToThb(qty * manual, unitCurrency, usdToThb);
+  }
+
+  // Cash/saving: amount can be THB or USD.
+  if (asset.asset_type === "cash") {
+    return asset.purchase_currency === "USD"
+      ? manual * usdToThb
+      : manual;
   }
 
   // Manual total assets: value = manual total value in THB.
@@ -746,7 +754,12 @@ function recalculateAssetFromTransactions(asset, transactions) {
 function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
   const Icon = TYPE_ICONS[asset.asset_type] || Wallet;
   const [showTx, setShowTx] = useState(false);
-
+  const pnl = (Number(asset.currentValue) || 0) - (Number(asset.costValue) || 0);
+const pnlPct =
+  Number(asset.costValue) > 0
+    ? (pnl / Number(asset.costValue)) * 100
+    : null;
+  
   function deleteTransaction(txId) {
     if (!confirm("Delete this transaction?")) return;
 
@@ -806,6 +819,12 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
 
       <div className="assetValue">
         <b>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
+        {pnlPct !== null && !hidden && (
+  <span className={pnl >= 0 ? "green" : "red"}>
+    {pnl >= 0 ? "+" : ""}
+    {pnlPct.toFixed(2)}%
+  </span>
+)}
         {priceData?.change_24h_percent ? (
           <span className={priceData.change_24h_percent >= 0 ? "green" : "red"}>
             {priceData.change_24h_percent >= 0 ? "+" : ""}
@@ -1325,7 +1344,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
             form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
             form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
             form.asset_type === "international_stock" ? "Example: 210 = current price/share" :
-            "Use for property/cash/manual fallback"
+            form.asset_type === "cash" ? "Example: 100000 = cash amount" :
+            "Use for property/manual fallback"
           }
         />
 
@@ -1343,6 +1363,22 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </div>
         )}
 
+        {form.asset_type === "cash" && (
+          <div>
+            <label>Cash Currency</label>
+            <select
+              value={form.purchase_currency}
+              onChange={(e) => set("purchase_currency", e.target.value)}
+            >
+              <option value="THB">THB</option>
+              <option value="USD">USD</option>
+            </select>
+            <div className="muted small">
+              If cash is USD, the app converts it using live USD/THB.
+            </div>
+          </div>
+        )}
+
         {!isManualUnitAsset(form.asset_type) && (
           <label className="checkLine">
             <input
@@ -1354,25 +1390,27 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </label>
         )}
 
-        <div className="twoCols">
-          <div>
-            <label>{getBuyPriceLabel(form.asset_type)}</label>
-            <input
-              type="number"
-              step="any"
-              value={form.purchase_price_per_unit}
-              onChange={(e) => set("purchase_price_per_unit", e.target.value)}
-              placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
-            />
+        {form.asset_type !== "cash" && (
+          <div className="twoCols">
+            <div>
+              <label>{getBuyPriceLabel(form.asset_type)}</label>
+              <input
+                type="number"
+                step="any"
+                value={form.purchase_price_per_unit}
+                onChange={(e) => set("purchase_price_per_unit", e.target.value)}
+                placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
+              />
+            </div>
+            <div>
+              <label>Purchase Currency</label>
+              <select value={form.purchase_currency} onChange={(e) => set("purchase_currency", e.target.value)}>
+                <option value="THB">THB</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label>Purchase Currency</label>
-            <select value={form.purchase_currency} onChange={(e) => set("purchase_currency", e.target.value)}>
-              <option value="THB">THB</option>
-              <option value="USD">USD</option>
-            </select>
-          </div>
-        </div>
+        )}
 
         {isManualUnitAsset(form.asset_type) && (
           <p className="muted small">
