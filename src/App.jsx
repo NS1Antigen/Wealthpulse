@@ -651,15 +651,15 @@ function AllocationChart({ assets, currency, hidden }) {
 }
 
 function Analytics({ assets, currency, hidden }) {
-  const totalCost = assets.reduce((s, a) => s + (a.costValue || 0), 0);
   const totalValue = assets.reduce((s, a) => s + (a.currentValue || 0), 0);
+  const cashAssets = assets.filter((a) => a.asset_type === "cash");
+  const investmentAssets = assets.filter((a) => a.asset_type !== "cash");
 
-  // Exclude cash from Unrealized P&L because cash is not an investment gain/loss asset.
-  const nonCashAssets = assets.filter((a) => a.asset_type !== "cash");
-  const nonCashCost = nonCashAssets.reduce((s, a) => s + (a.costValue || 0), 0);
-  const nonCashValue = nonCashAssets.reduce((s, a) => s + (a.currentValue || 0), 0);
-  const pnl = nonCashValue - nonCashCost;
-  const pct = nonCashCost > 0 ? (pnl / nonCashCost) * 100 : 0;
+  const cashBalance = cashAssets.reduce((s, a) => s + (a.currentValue || 0), 0);
+  const investmentCost = investmentAssets.reduce((s, a) => s + (a.costValue || 0), 0);
+  const investmentValue = investmentAssets.reduce((s, a) => s + (a.currentValue || 0), 0);
+  const pnl = investmentValue - investmentCost;
+  const pct = investmentCost > 0 ? (pnl / investmentCost) * 100 : 0;
 
   const top = [...assets].sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0))[0];
   const concentration = top && totalValue > 0 ? (top.currentValue / totalValue) * 100 : 0;
@@ -668,10 +668,28 @@ function Analytics({ assets, currency, hidden }) {
     <section className="card">
       <h2>Portfolio Analytics</h2>
       <div className="stats">
-        <Stat label="Unrealized P&L" value={hidden ? "••••••" : `${pnl >= 0 ? "+" : ""}${formatCurrency(pnl, currency)}`} sub={`${pnl >= 0 ? "+" : ""}${pct.toFixed(2)}%`} good={pnl >= 0} />
-        <Stat label="Total Invested" value={hidden ? "••••••" : formatCurrency(totalCost, currency)} sub="Cost basis" />
-        <Stat label="Top Concentration" value={`${concentration.toFixed(1)}%`} sub={top?.name || "—"} warn={concentration > 50} />
-        <Stat label="# Assets" value={String(assets.length)} sub={`${new Set(assets.map((a) => a.asset_type)).size} types`} />
+        <Stat
+          label="Investment P&L"
+          value={hidden ? "••••••" : `${pnl >= 0 ? "+" : ""}${formatCurrency(pnl, currency)}`}
+          sub={`${pnl >= 0 ? "+" : ""}${pct.toFixed(2)}% · excludes cash`}
+          good={pnl >= 0}
+        />
+        <Stat
+          label="Investment Cost"
+          value={hidden ? "••••••" : formatCurrency(investmentCost, currency)}
+          sub="Excludes cash/savings"
+        />
+        <Stat
+          label="Cash Balance"
+          value={hidden ? "••••••" : formatCurrency(cashBalance, currency)}
+          sub={`${cashAssets.length} cash asset${cashAssets.length === 1 ? "" : "s"}`}
+        />
+        <Stat
+          label="Top Concentration"
+          value={`${concentration.toFixed(1)}%`}
+          sub={top?.name || "—"}
+          warn={concentration > 50}
+        />
       </div>
     </section>
   );
@@ -690,29 +708,90 @@ function Stat({ label, value, sub, good, warn }) {
 function NetWorthChart({ timeline, currency, hidden }) {
   const data = timeline.map((t) => ({
     date: t.date,
+    displayDate: new Date(t.date).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric"
+    }),
     value: currency === "THB" ? t.totalThb : t.totalUsd
   }));
 
+  const latest = data[data.length - 1]?.value || 0;
+  const first = data[0]?.value || 0;
+  const change = latest - first;
+  const changePct = first > 0 ? (change / first) * 100 : 0;
+
   return (
     <section className="card">
-      <h2>Net Worth Timeline</h2>
+      <div className="row">
+        <div>
+          <h2>Net Worth Timeline</h2>
+          <p className="muted small" style={{ marginBottom: 0 }}>
+            Saved from each Refresh snapshot
+          </p>
+        </div>
+        {data.length >= 2 && !hidden && (
+          <div className={change >= 0 ? "green statValue" : "red statValue"} style={{ textAlign: "right" }}>
+            {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
+            <div className="muted small">
+              {change >= 0 ? "+" : ""}{changePct.toFixed(2)}%
+            </div>
+          </div>
+        )}
+      </div>
+
       {data.length < 2 ? (
         <p className="muted chartEmpty">Refresh prices on different days to build your timeline.</p>
       ) : (
         <div className="areaBox">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data}>
+            <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.32} />
+                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-              <XAxis dataKey="date" fontSize={11} />
-              <YAxis hide={hidden} fontSize={11} />
-              <Tooltip formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)} />
-              <Area type="monotone" dataKey="value" stroke="#3b82f6" fill="url(#wealthGradient)" />
+              <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" opacity={0.55} />
+              <XAxis
+                dataKey="displayDate"
+                tick={{ fill: "var(--muted)", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                hide={hidden}
+                tick={{ fill: "var(--muted)", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                width={72}
+                tickFormatter={(v) => {
+                  if (hidden) return "";
+                  if (Math.abs(v) >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+                  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}K`;
+                  return v;
+                }}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "var(--card)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 14,
+                  boxShadow: "var(--shadow)",
+                  color: "var(--text)"
+                }}
+                labelStyle={{ color: "var(--muted)", fontSize: 12 }}
+                formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
+                labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+              />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke="var(--primary)"
+                strokeWidth={3}
+                fill="url(#wealthGradient)"
+                dot={{ r: 3, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)" }}
+                activeDot={{ r: 6, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)" }}
+              />
             </AreaChart>
           </ResponsiveContainer>
         </div>
