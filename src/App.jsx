@@ -45,8 +45,6 @@ import {
 } from "./localStore.js";
 import {
   fetchAllPrices,
-  calculateAssetValue,
-  calculateCostValue,
   formatCurrency
 } from "./priceService.js";
 import {
@@ -92,6 +90,8 @@ const TYPE_ICONS = {
   crypto_other: Coins,
   thai_stock: BarChart3,
   international_stock: Globe,
+  thai_gold: Coins,
+  mutual_fund: Landmark,
   gold: Coins,
   gold_jewelry: Coins,
   property: Building2,
@@ -106,9 +106,10 @@ const COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"
 
 function defaultTicker(type) {
   if (type === "bitcoin") return "BTC";
-  if (type === "gold") return "XAU";
-  if (type === "international_stock") return "SP500";
-  if (type === "thai_stock") return "PTT.BK";
+  if (type === "international_stock") return "";
+  if (type === "thai_stock") return "";
+  if (type === "mutual_fund") return "";
+  if (type === "thai_gold") return "";
   return "";
 }
 
@@ -139,14 +140,84 @@ const TICKER_SUGGESTIONS = {
   gold: ["XAU"]
 };
 
-function needsTicker(type) {
+function needsLiveTicker(type) {
   return ["bitcoin", "crypto_other", "international_stock"].includes(type);
 }
-function needsQuantity(type) {
-  return ["bitcoin", "crypto_other", "international_stock", "thai_gold"].includes(type);
+
+function needsSymbol(type) {
+  return ["bitcoin", "crypto_other", "international_stock", "thai_stock", "mutual_fund"].includes(type);
 }
+
 function needsQuantity(type) {
-  return ["bitcoin", "crypto_other", "international_stock", "thai_gold"].includes(type);
+  return ["bitcoin", "crypto_other", "international_stock", "thai_stock", "mutual_fund", "thai_gold"].includes(type);
+}
+
+function isManualUnitAsset(type) {
+  return ["thai_stock", "mutual_fund", "thai_gold"].includes(type);
+}
+
+function getUnitLabel(type) {
+  if (type === "thai_gold") return "Gold Weight (Baht / บาททอง)";
+  if (type === "mutual_fund") return "Units";
+  if (type === "thai_stock") return "Shares";
+  return "Quantity / Units";
+}
+
+function getCurrentPriceLabel(type) {
+  if (type === "thai_gold") return "Current Gold Price Per Baht (THB)";
+  if (type === "thai_stock") return "Current Price Per Share (THB)";
+  if (type === "mutual_fund") return "Current NAV / Price Per Unit (THB)";
+  return "Manual Current Value THB";
+}
+
+function getBuyPriceLabel(type) {
+  if (type === "thai_gold") return "Buy Price Per Baht (THB)";
+  if (type === "thai_stock") return "Buy Price Per Share";
+  if (type === "mutual_fund") return "Buy NAV / Price Per Unit";
+  return "Buy Price / Unit";
+}
+
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getAssetCurrentValueThb(asset, prices, usdToThb) {
+  const qty = safeNumber(asset.quantity);
+  const manual = safeNumber(asset.manual_value_thb);
+
+  if (asset.asset_type === "thai_stock" || asset.asset_type === "mutual_fund" || asset.asset_type === "thai_gold") {
+    return qty * manual;
+  }
+
+  if (asset.use_manual_value || !needsLiveTicker(asset.asset_type)) {
+    return manual;
+  }
+
+  const priceData = prices?.[asset.ticker];
+  const livePrice = safeNumber(priceData?.price);
+  if (!livePrice || !qty) return manual;
+
+  const priceCurrency = priceData?.currency || (asset.asset_type === "bitcoin" || asset.asset_type === "crypto_other" || asset.asset_type === "international_stock" ? "USD" : "THB");
+  const value = qty * livePrice;
+  return priceCurrency === "USD" ? value * usdToThb : value;
+}
+
+function getAssetCostValueThb(asset, usdToThb) {
+  const qty = safeNumber(asset.quantity);
+  const buy = safeNumber(asset.purchase_price_per_unit);
+  const manual = safeNumber(asset.manual_value_thb);
+
+  if (qty && buy) {
+    const rawCost = qty * buy;
+    return asset.purchase_currency === "USD" ? rawCost * usdToThb : rawCost;
+  }
+
+  return asset.use_manual_value && manual ? manual : 0;
+}
+
+function convertThb(valueThb, usdToThb, currency) {
+  return currency === "USD" ? valueThb / usdToThb : valueThb;
 }
 function App() {
   const [theme, setTheme] = useState(getTheme());
@@ -184,7 +255,7 @@ function App() {
 
       const withValues = currentAssets.map((a) => ({
         ...a,
-        currentValueThb: calculateAssetValue(a, result.prices, result.usdToThb, "THB")
+        currentValueThb: getAssetCurrentValueThb(a, result.prices, result.usdToThb)
       }));
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
       const breakdown = {};
@@ -199,11 +270,15 @@ function App() {
   }
 
   const assetsWithValues = useMemo(() => {
-    return assets.map((a) => ({
-      ...a,
-      currentValue: calculateAssetValue(a, prices, usdToThb, currency),
-      costValue: calculateCostValue(a, usdToThb, currency)
-    }));
+    return assets.map((a) => {
+      const currentValueThb = getAssetCurrentValueThb(a, prices, usdToThb);
+      const costValueThb = getAssetCostValueThb(a, usdToThb);
+      return {
+        ...a,
+        currentValue: convertThb(currentValueThb, usdToThb, currency),
+        costValue: convertThb(costValueThb, usdToThb, currency)
+      };
+    });
   }, [assets, prices, usdToThb, currency]);
 
   const totalValue = assetsWithValues.reduce((s, a) => s + (a.currentValue || 0), 0);
@@ -317,7 +392,7 @@ function App() {
     note: data.notes || ""
   };
 
-  if (existing && data.quantity > 0) {
+  if (existing && Number(data.quantity) > 0) {
     const oldTransactions = existing.transactions || [
       {
         id: crypto.randomUUID(),
@@ -780,7 +855,7 @@ async function checkPrice(asset) {
     { symbol: "KFUS", name: "Krungsri US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
 
     // Gold
-    { symbol: "XAU", name: "Gold Spot", asset_type: "gold", source: "Market API", currency: "USD" }
+    { symbol: "THAI-GOLD", name: "Thai Gold 96.5%", asset_type: "thai_gold", source: "Manual price per baht", currency: "THB" }
   ];
 
   const q = query.trim().toLowerCase();
@@ -865,7 +940,7 @@ function ManageAssets({ assets, openAssetForm, editAsset, removeAsset }) {
 
       <div className="table">
         <div className="tableHead">
-          <span>Asset</span><span>Type</span><span>Ticker</span><span>Quantity</span><span>Manual THB</span><span></span>
+          <span>Asset</span><span>Type</span><span>Ticker</span><span>Quantity</span><span>Current Price</span><span></span>
         </div>
         {assets.map((a) => (
           <div className="tableRow" key={a.id}>
@@ -1027,56 +1102,58 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
   const [tickerSuggestions, setTickerSuggestions] = useState([]);
   const [searchingTicker, setSearchingTicker] = useState(false);
+
   useEffect(() => {
-  let cancelled = false;
+    let cancelled = false;
 
-  async function runSearch() {
-    if (!needsTicker(form.asset_type)) {
-      setTickerSuggestions([]);
-      return;
+    async function runSearch() {
+      if (!needsSymbol(form.asset_type)) {
+        setTickerSuggestions([]);
+        return;
+      }
+
+      const q = String(form.ticker || "").trim();
+      if (q.length < 2) {
+        setTickerSuggestions([]);
+        return;
+      }
+
+      if (form.asset_type === "mutual_fund") {
+        const results = MUTUAL_FUND_DATABASE.filter((fund) =>
+          fund.symbol.toLowerCase().includes(q.toLowerCase()) ||
+          fund.name.toLowerCase().includes(q.toLowerCase()) ||
+          fund.amc.toLowerCase().includes(q.toLowerCase())
+        ).map((fund) => ({
+          symbol: fund.symbol,
+          name: `${fund.name} · ${fund.amc}`,
+          exchange: "Thai Mutual Fund"
+        }));
+        if (!cancelled) setTickerSuggestions(results);
+        return;
+      }
+
+      if (form.asset_type === "bitcoin") {
+        setTickerSuggestions([{ symbol: "BTC", name: "Bitcoin", exchange: "CoinGecko" }]);
+        return;
+      }
+
+      if (form.asset_type === "thai_stock" || form.asset_type === "international_stock" || form.asset_type === "crypto_other") {
+        setSearchingTicker(true);
+        const results = await searchTickerSuggestions(q, form.asset_type);
+        if (!cancelled) {
+          setTickerSuggestions(results);
+          setSearchingTicker(false);
+        }
+      }
     }
 
-    const q = String(form.ticker || "").trim();
+    const timer = setTimeout(runSearch, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [form.ticker, form.asset_type]);
 
-    if (q.length < 2) {
-      setTickerSuggestions([]);
-      return;
-    }
-    if (form.asset_type === "mutual_fund") {
-  const q = String(form.ticker || "").toLowerCase();
-
-  const results = MUTUAL_FUND_DATABASE.filter((fund) =>
-    fund.symbol.toLowerCase().includes(q) ||
-    fund.name.toLowerCase().includes(q) ||
-    fund.amc.toLowerCase().includes(q)
-  ).map((fund) => ({
-    symbol: fund.symbol,
-    name: `${fund.name} · ${fund.amc}`,
-    exchange: "Thai Mutual Fund"
-  }));
-
-  setTickerSuggestions(results);
-  setSearchingTicker(false);
-  return;
-}
-    
-    setSearchingTicker(true);
-    const results = await searchTickerSuggestions(q, form.asset_type);
-
-    if (!cancelled) {
-      setTickerSuggestions(results);
-      setSearchingTicker(false);
-    }
-  }
-
-  const timer = setTimeout(runSearch, 350);
-
-  return () => {
-    cancelled = true;
-    clearTimeout(timer);
-  };
-}, [form.ticker, form.asset_type]);
-  
   function set(key, value) {
     setForm((f) => ({ ...f, [key]: value }));
   }
@@ -1085,29 +1162,29 @@ function AssetForm({ editingAsset, onClose, onSave }) {
     setForm((f) => ({
       ...f,
       asset_type: type,
-      ticker: f.ticker || defaultTicker(type)
+      ticker: defaultTicker(type),
+      manual_value_thb: "",
+      use_manual_value: isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
     }));
   }
 
   function submit(e) {
     e.preventDefault();
-    const quantity = Number(form.quantity) || 0;
-const manualInput = Number(form.manual_value_thb) || 0;
 
-onSave({
-  name: form.name.trim(),
-  asset_type: form.asset_type,
-  ticker: needsTicker(form.asset_type) ? String(form.ticker || "").trim().toUpperCase() : "",
-  quantity,
-  manual_value_thb:
-    form.asset_type === "thai_gold"
-      ? quantity * manualInput
-      : manualInput,
-  use_manual_value: !!form.use_manual_value,
-  purchase_price_per_unit: Number(form.purchase_price_per_unit) || 0,
-  purchase_currency: form.purchase_currency,
-  notes: form.notes
-});
+    const quantity = safeNumber(form.quantity);
+    const manualValue = safeNumber(form.manual_value_thb);
+
+    onSave({
+      name: form.name.trim(),
+      asset_type: form.asset_type,
+      ticker: needsSymbol(form.asset_type) ? String(form.ticker || "").trim().toUpperCase() : "",
+      quantity,
+      manual_value_thb: manualValue,
+      use_manual_value: isManualUnitAsset(form.asset_type) ? true : !!form.use_manual_value,
+      purchase_price_per_unit: safeNumber(form.purchase_price_per_unit),
+      purchase_currency: form.purchase_currency,
+      notes: form.notes
+    });
   }
 
   return (
@@ -1119,7 +1196,12 @@ onSave({
         </div>
 
         <label>Asset Name</label>
-        <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="My Bitcoin, Bangkok Condo, AAPL" required />
+        <input
+          value={form.name}
+          onChange={(e) => set("name", e.target.value)}
+          placeholder="My Bitcoin, SCBS&P500, PTT, Thai gold, condo"
+          required
+        />
 
         <label>Asset Type</label>
         <select value={form.asset_type} onChange={(e) => changeType(e.target.value)}>
@@ -1128,131 +1210,89 @@ onSave({
 
         {needsQuantity(form.asset_type) && (
           <>
-            <label>
-  {form.asset_type === "thai_gold"
-    ? "Gold Weight (Baht)"
-    : "Quantity / Units"}
-</label>
-
-<input
-  type="number"
-  step="any"
-  value={form.quantity}
-  onChange={(e) => set("quantity", e.target.value)}
-  placeholder={
-    form.asset_type === "thai_gold"
-      ? "Example: 1, 2, 5"
-      : "0.1, 10, 100"
-  }
-/>
-            {needsQuantity(form.asset_type) && (
-  <>
-    <label>
-      {form.asset_type === "thai_gold"
-        ? "Gold Weight (Baht)"
-        : "Quantity / Units"}
-    </label>
-
-    <input
-      type="number"
-      step="any"
-      value={form.quantity}
-      onChange={(e) => set("quantity", e.target.value)}
-      placeholder={
-        form.asset_type === "thai_gold"
-          ? "Example: 1, 2, 5"
-          : "0.1, 10, 100"
-      }
-    />
-
-    {needsTicker(form.asset_type) && (
-      <>
-        <label>Ticker Symbol</label>
-
-        <input
-          value={form.ticker}
-          onChange={(e) => set("ticker", e.target.value.toUpperCase())}
-          placeholder="Type name or ticker e.g. apple, btc"
-        />
-
-        {searchingTicker && (
-          <div className="muted small">Searching ticker...</div>
-        )}
-
-        {tickerSuggestions.length > 0 && (
-          <div className="suggestBox">
-            {tickerSuggestions.map((item) => (
-              <button
-                type="button"
-                key={`${item.symbol}-${item.exchange}`}
-                className="suggestItem"
-                onClick={() => {
-                  set("ticker", item.symbol.toUpperCase());
-                  setTickerSuggestions([]);
-                }}
-              >
-                <b>{item.symbol}</b>
-                <span>{item.name}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </>
-    )}
-  </>
-)}
-
-            <label>
-  {form.asset_type === "thai_gold"
-    ? "Gold Weight (Baht)"
-    : "Quantity / Units"}
-</label>
-<input
-  type="number"
-  step="any"
-  value={form.quantity}
-  onChange={(e) => set("quantity", e.target.value)}
-  placeholder={form.asset_type === "thai_gold" ? "Example: 1, 2, 5" : "0.1, 10, 100"}
-/>
+            <label>{getUnitLabel(form.asset_type)}</label>
+            <input
+              type="number"
+              step="any"
+              value={form.quantity}
+              onChange={(e) => set("quantity", e.target.value)}
+              placeholder={form.asset_type === "thai_gold" ? "Example: 1, 2, 5" : "Example: 0.1, 10, 100"}
+            />
           </>
         )}
 
-        <label>
-  {form.asset_type === "thai_gold"
-    ? "Current Gold Price Per Baht (THB)"
-    : "Manual Current Value THB"}
-</label>
-<input
-  type="number"
-  step="any"
-  value={form.manual_value_thb}
-  onChange={(e) => set("manual_value_thb", e.target.value)}
-  placeholder={
-    form.asset_type === "thai_gold"
-      ? "Example: 52000"
-      : "Use for property/manual override/fallback"
-  }
-/>
+        {needsSymbol(form.asset_type) && (
+          <>
+            <label>{needsLiveTicker(form.asset_type) ? "Live Ticker Symbol" : "Symbol / Fund Code"}</label>
+            <input
+              value={form.ticker}
+              onChange={(e) => set("ticker", e.target.value.toUpperCase())}
+              placeholder={
+                form.asset_type === "bitcoin" ? "BTC" :
+                form.asset_type === "thai_stock" ? "Example: PTT.BK or PTT" :
+                form.asset_type === "mutual_fund" ? "Example: SCBS&P500" :
+                "Example: AAPL, VOO, ETH"
+              }
+            />
 
-        <label className="checkLine">
-          <input type="checkbox" checked={form.use_manual_value} onChange={(e) => set("use_manual_value", e.target.checked)} />
-          Force use manual value instead of live price
-        </label>
+            {searchingTicker && <div className="muted small">Searching ticker...</div>}
+
+            {tickerSuggestions.length > 0 && (
+              <div className="suggestBox">
+                {tickerSuggestions.map((item) => (
+                  <button
+                    type="button"
+                    key={`${item.symbol}-${item.exchange}`}
+                    className="suggestItem"
+                    onClick={() => {
+                      set("ticker", item.symbol.toUpperCase());
+                      setTickerSuggestions([]);
+                    }}
+                  >
+                    <b>{item.symbol}</b>
+                    <span>{item.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        <label>{getCurrentPriceLabel(form.asset_type)}</label>
+        <input
+          type="number"
+          step="any"
+          value={form.manual_value_thb}
+          onChange={(e) => set("manual_value_thb", e.target.value)}
+          placeholder={
+            form.asset_type === "thai_gold" ? "Example: 52000 = current gold price per baht" :
+            form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
+            form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
+            "Use for property/cash/manual fallback"
+          }
+        />
+
+        {!isManualUnitAsset(form.asset_type) && (
+          <label className="checkLine">
+            <input
+              type="checkbox"
+              checked={form.use_manual_value}
+              onChange={(e) => set("use_manual_value", e.target.checked)}
+            />
+            Force use manual value instead of live price
+          </label>
+        )}
 
         <div className="twoCols">
           <div>
-            <label>
-  {form.asset_type === "thai_gold"
-    ? "Purchase Price Per Baht"
-    : "Purchase Price / Unit"}
-</label>
-<input
-  type="number"
-  step="any"
-  value={form.purchase_price_per_unit}
-  onChange={(e) => set("purchase_price_per_unit", e.target.value)}
-  placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
-/>
+            <label>{getBuyPriceLabel(form.asset_type)}</label>
+            <input
+              type="number"
+              step="any"
+              value={form.purchase_price_per_unit}
+              onChange={(e) => set("purchase_price_per_unit", e.target.value)}
+              placeholder={form.asset_type === "thai_gold" ? "Example: 48000" : "Optional"}
+            />
           </div>
           <div>
             <label>Purchase Currency</label>
@@ -1263,8 +1303,18 @@ onSave({
           </div>
         </div>
 
+        {isManualUnitAsset(form.asset_type) && (
+          <p className="muted small">
+            Calculation: quantity × current price. Buy price is used only for cost basis and P&L.
+          </p>
+        )}
+
         <label>Notes</label>
-        <textarea value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Broker, account, location, valuation date..." />
+        <textarea
+          value={form.notes}
+          onChange={(e) => set("notes", e.target.value)}
+          placeholder="Broker, account, valuation date, source of manual price..."
+        />
 
         <div className="actions">
           <button type="button" className="outline" onClick={onClose}>Cancel</button>
