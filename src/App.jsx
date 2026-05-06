@@ -500,7 +500,8 @@ function App() {
       ...data,
       transactions: [newTx],
       cost_incomplete:
-        !data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0
+  data.asset_type !== "cash" &&
+  (!data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0)
     });
   }
 }
@@ -972,9 +973,9 @@ const pnlPct =
           </div>
         )}
 
-        {asset.cost_incomplete && (
-          <div className="red small">Cost incomplete: some buy price missing</div>
-        )}
+        {asset.asset_type !== "cash" && asset.cost_incomplete && (
+  <div className="red small">Cost incomplete: some buy price missing</div>
+)}
 
         {asset.transactions?.length > 0 && (
           <button className="ghost" onClick={() => setShowTx(!showTx)}>
