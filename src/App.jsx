@@ -171,25 +171,39 @@ function valueToThb(value, currency, usdToThb) {
 async function fetchLiveUsdToThb(fallback = 34.5) {
   // Prefer Frankfurter first because it uses ECB reference data.
   const apis = [
-    "https://api.frankfurter.app/latest?from=USD&to=THB",
-    "https://open.er-api.com/v6/latest/USD"
+    {
+      name: "Frankfurter / ECB",
+      url: "https://api.frankfurter.app/latest?from=USD&to=THB"
+    },
+    {
+      name: "ExchangeRate-API fallback",
+      url: "https://open.er-api.com/v6/latest/USD"
+    }
   ];
 
-  for (const url of apis) {
+  for (const api of apis) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(api.url, { cache: "no-store" });
       if (!res.ok) continue;
       const data = await res.json();
       const rate = data?.rates?.THB;
       if (Number.isFinite(Number(rate)) && Number(rate) > 0) {
-        return Number(rate);
+        return {
+          rate: Number(rate),
+          source: api.name,
+          sourceDate: data?.date || data?.time_last_update_utc || new Date().toISOString()
+        };
       }
     } catch (err) {
-      console.warn("USD/THB fetch failed:", err);
+      console.warn("USD/THB fetch failed:", api.name, err);
     }
   }
 
-  return fallback;
+  return {
+    rate: fallback,
+    source: "Cached / fallback",
+    sourceDate: null
+  };
 }
 
 function getAssetCurrentValueThb(asset, prices, usdToThb) {
@@ -256,6 +270,8 @@ function App() {
   const [assets, setAssets] = useState(getAssets());
   const [prices, setPrices] = useState(loadSnapshot()?.prices || {});
   const [usdToThb, setUsdToThb] = useState(loadSnapshot()?.usdToThb || 34.5);
+  const [fxSource, setFxSource] = useState("Saved / cached");
+  const [fxSourceDate, setFxSourceDate] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(loadSnapshot()?.timestamp || null);
   const [currency, setCurrency] = useState(getCurrency());
   const [hidden, setHidden] = useState(false);
@@ -277,7 +293,8 @@ function App() {
     const currentAssets = getAssets();
     setLoading(true);
     try {
-      const liveUsdToThb = await fetchLiveUsdToThb(usdToThb);
+      const fxResult = await fetchLiveUsdToThb(usdToThb);
+      const liveUsdToThb = fxResult.rate;
       const liveAssets = currentAssets.filter((a) => needsLiveTicker(a.asset_type));
       const result = liveAssets.length > 0
         ? await fetchAllPrices(liveAssets)
@@ -288,6 +305,8 @@ function App() {
 
       setPrices(finalPrices);
       setUsdToThb(finalUsdToThb);
+      setFxSource(fxResult.source || "Unknown");
+      setFxSourceDate(fxResult.sourceDate || null);
       setLastUpdated(new Date().toISOString());
       saveSnapshot(finalPrices, finalUsdToThb);
 
@@ -349,6 +368,8 @@ function App() {
             lastUpdated={lastUpdated}
             timeline={timeline}
             usdToThb={usdToThb}
+            fxSource={fxSource}
+            fxSourceDate={fxSourceDate}
             openAssetForm={() => setModalAsset({})}
             editAsset={(a) => setModalAsset(a)}
             removeAsset={(id) => {
@@ -589,6 +610,8 @@ function Dashboard(props) {
     lastUpdated,
     timeline,
     usdToThb,
+    fxSource,
+    fxSourceDate,
     openAssetForm,
     editAsset,
     removeAsset
@@ -604,7 +627,13 @@ function Dashboard(props) {
             <div className="muted small">
               {lastUpdated ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : "Using saved/manual prices"}
               {` · USD/THB: ${Number(usdToThb || 0).toFixed(4)}`}
+              {` · FX: ${fxSource || "Saved"}`}
             </div>
+            {fxSourceDate && (
+              <div className="muted small">
+                FX date/source time: {String(fxSourceDate)}
+              </div>
+            )}
           </div>
 
           <div className="actions">
@@ -1407,6 +1436,10 @@ function AssetForm({ editingAsset, onClose, onSave }) {
   const [savedAssetSuggestions, setSavedAssetSuggestions] = useState([]);
   const [showSavedAssetSuggestions, setShowSavedAssetSuggestions] = useState(false);
 
+  const existingAssetOptions = getAssets()
+    .filter((a) => form.asset_type === "cash" ? a.asset_type === "cash" : a.asset_type !== "cash")
+    .slice(0, 30);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -1582,6 +1615,28 @@ function AssetForm({ editingAsset, onClose, onSave }) {
                 </span>
               </button>
             ))}
+          </div>
+        )}
+
+        {!editingAsset && existingAssetOptions.length > 0 && (
+          <div>
+            <label>Quick add existing asset</label>
+            <select
+              value=""
+              onChange={(e) => {
+                const id = e.target.value;
+                const selected = getAssets().find((a) => String(a.id) === String(id));
+                if (selected) selectSavedAsset(selected);
+              }}
+            >
+              <option value="">Choose saved asset to auto-fill type/ticker</option>
+              {existingAssetOptions.map((asset) => (
+                <option value={asset.id} key={asset.id}>
+                  {asset.name} · {TYPE_LABELS[asset.asset_type] || asset.asset_type}
+                  {asset.ticker ? ` · ${asset.ticker}` : ""}
+                </option>
+              ))}
+            </select>
           </div>
         )}
 
