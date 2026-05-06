@@ -202,9 +202,19 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
     return valueToThb(qty * manual, unitCurrency, usdToThb);
   }
 
-  // Cash / savings is a simple balance, not an investment.
-  // It can be THB or USD; USD cash is converted using live USD/THB.
+  // Cash / savings is one account with deposit transactions.
+  // Each transaction can be THB or USD; USD is converted using live USD/THB.
   if (asset.asset_type === "cash") {
+    const txs = Array.isArray(asset.transactions) ? asset.transactions : [];
+
+    if (txs.length > 0) {
+      return txs.reduce((sum, tx) => {
+        const amount = safeNumber(tx.amount ?? tx.quantity);
+        const txCurrency = tx.currency || asset.purchase_currency || "THB";
+        return sum + valueToThb(amount, txCurrency, usdToThb);
+      }, 0);
+    }
+
     return asset.purchase_currency === "USD" ? manual * usdToThb : manual;
   }
 
@@ -408,17 +418,46 @@ function App() {
                   (!data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0)
               });
             } else if (data.asset_type === "cash") {
-              // Cash/savings is simple balance only.
-              // It never merges automatically, never creates buy transactions,
-              // and never shows cost incomplete or profit percentage.
-              createAsset({
-                ...data,
-                quantity: 0,
-                ticker: "",
-                purchase_price_per_unit: 0,
-                cost_incomplete: false,
-                transactions: []
-              });
+              // Cash/savings works as one simple account with deposit transactions.
+              // Same cash name = append transaction into the existing savings account.
+              const existingCash = getAssets().find(
+                (a) =>
+                  a.asset_type === "cash" &&
+                  String(a.name || "").trim().toLowerCase() ===
+                    String(data.name || "").trim().toLowerCase()
+              );
+
+              const cashTx = {
+                id: crypto.randomUUID(),
+                type: "deposit",
+                date: new Date().toISOString(),
+                amount: Number(data.manual_value_thb) || 0,
+                currency: data.purchase_currency || "THB",
+                note: data.notes || ""
+              };
+
+              if (existingCash) {
+                updateAsset(existingCash.id, {
+                  ...existingCash,
+                  transactions: [...(existingCash.transactions || []), cashTx],
+                  manual_value_thb: 0,
+                  purchase_currency: "MIXED",
+                  purchase_price_per_unit: 0,
+                  cost_incomplete: false,
+                  manual_price_updated_at: data.manual_price_updated_at
+                });
+              } else {
+                createAsset({
+                  ...data,
+                  quantity: 0,
+                  ticker: "",
+                  manual_value_thb: 0,
+                  purchase_currency: "MIXED",
+                  purchase_price_per_unit: 0,
+                  cost_incomplete: false,
+                  transactions: [cashTx]
+                });
+              }
             } else {
               const existing = getAssets().find(
                 (a) =>
@@ -929,11 +968,20 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portf
     if (!confirm("Delete this transaction?")) return;
 
     const transactions = (asset.transactions || []).filter((tx) => tx.id !== txId);
-    const updated = recalculateAssetFromTransactions(asset, transactions);
 
     if (transactions.length === 0) {
       deleteAsset(asset.id);
+    } else if (asset.asset_type === "cash") {
+      updateAsset(asset.id, {
+        ...asset,
+        transactions,
+        manual_value_thb: 0,
+        purchase_currency: "MIXED",
+        purchase_price_per_unit: 0,
+        cost_incomplete: false
+      });
     } else {
+      const updated = recalculateAssetFromTransactions(asset, transactions);
       updateAsset(asset.id, updated);
     }
 
@@ -951,7 +999,7 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portf
           {asset.ticker ? ` · ${asset.ticker}` : ""}
           {` · ${allocationPct.toFixed(1)}% of portfolio`}
           {asset.quantity && asset.asset_type !== "cash" ? ` · ${asset.quantity} units` : ""}
-          {asset.asset_type === "cash" ? ` · ${asset.purchase_currency || "THB"}` : ""}
+          {asset.asset_type === "cash" ? " · THB/USD account" : ""}
           {priceData ? ` · ${priceData.source}` : ""}
         </div>
 
@@ -959,21 +1007,31 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portf
           <div className="red small">Cost incomplete: some buy price missing</div>
         )}
 
-        {asset.asset_type !== "cash" && asset.transactions?.length > 0 && (
+        {asset.transactions?.length > 0 && (
           <button className="ghost" onClick={() => setShowTx(!showTx)}>
             {showTx ? "Hide" : "Show"} transactions ({asset.transactions.length})
           </button>
         )}
 
-        {asset.asset_type !== "cash" && showTx && (
+        {showTx && (
           <div className="txList">
             {asset.transactions.map((tx) => (
               <div className="txRow" key={tx.id}>
                 <span>
-                  {new Date(tx.date).toLocaleDateString()} · {tx.quantity} units ·{" "}
-                  {tx.price_per_unit
-                    ? `${tx.price_per_unit} ${tx.currency}`
-                    : "cost unknown"}
+                  {asset.asset_type === "cash" ? (
+                    <>
+                      {new Date(tx.date).toLocaleDateString()} · Deposit ·{" "}
+                      {Number(tx.amount ?? tx.quantity || 0).toLocaleString()} {tx.currency || "THB"}
+                      {tx.note ? ` · ${tx.note}` : ""}
+                    </>
+                  ) : (
+                    <>
+                      {new Date(tx.date).toLocaleDateString()} · {tx.quantity} units ·{" "}
+                      {tx.price_per_unit
+                        ? `${tx.price_per_unit} ${tx.currency}`
+                        : "cost unknown"}
+                    </>
+                  )}
                 </span>
                 <button className="ghost danger" onClick={() => deleteTransaction(tx.id)}>
                   Delete
@@ -1399,7 +1457,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
     if (key === "name") {
       const q = String(value || "").trim().toLowerCase();
       const saved = getAssets()
-        .filter((a) => a.asset_type !== "cash")
+        .filter((a) => form.asset_type === "cash" ? a.asset_type === "cash" : a.asset_type !== "cash")
         .filter((a) => {
           if (!q) return true;
           return (
@@ -1419,14 +1477,16 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       ...f,
       name: asset.name || "",
       asset_type: asset.asset_type || "bitcoin",
-      ticker: asset.ticker || defaultTicker(asset.asset_type),
+      ticker: asset.asset_type === "cash" ? "" : (asset.ticker || defaultTicker(asset.asset_type)),
       current_price_currency: asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type),
-      purchase_currency: asset.purchase_currency || defaultCurrentPriceCurrency(asset.asset_type),
+      purchase_currency: asset.asset_type === "cash" ? "THB" : (asset.purchase_currency || defaultCurrentPriceCurrency(asset.asset_type)),
+      purchase_price_per_unit: asset.asset_type === "cash" ? "" : f.purchase_price_per_unit,
       use_manual_value:
+        asset.asset_type === "cash" ||
         isManualUnitAsset(asset.asset_type) ||
         ["property", "land", "other"].includes(asset.asset_type),
-      manual_value_thb: asset.manual_value_thb || "",
-      notes: asset.notes || ""
+      manual_value_thb: "",
+      notes: asset.asset_type === "cash" ? "" : (asset.notes || "")
     }));
     setShowSavedAssetSuggestions(false);
   }
@@ -1486,8 +1546,10 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         <input
           value={form.name}
           onFocus={() => {
-            if (!editingAsset && form.asset_type !== "cash") {
-              const saved = getAssets().filter((a) => a.asset_type !== "cash").slice(0, 8);
+            if (!editingAsset) {
+              const saved = getAssets()
+                .filter((a) => form.asset_type === "cash" ? a.asset_type === "cash" : a.asset_type !== "cash")
+                .slice(0, 8);
               setSavedAssetSuggestions(saved);
               setShowSavedAssetSuggestions(saved.length > 0);
             }
@@ -1497,7 +1559,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           required
         />
 
-        {!editingAsset && form.asset_type !== "cash" && showSavedAssetSuggestions && savedAssetSuggestions.length > 0 && (
+        {!editingAsset && showSavedAssetSuggestions && savedAssetSuggestions.length > 0 && (
           <div className="suggestBox">
             {savedAssetSuggestions.map((asset) => (
               <button
@@ -1612,7 +1674,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
               <option value="USD">USD</option>
             </select>
             <div className="muted small">
-              Cash/savings has no buy price and no profit %. Add separate THB and USD balances if needed.
+              Cash/savings has no buy price and no profit %. Add again with the same name to record another THB/USD deposit transaction.
             </div>
           </div>
         )}
