@@ -279,3 +279,34 @@ h2 { font-size: 18px; display: flex; align-items: center; gap: 8px; }
   .formGrid { grid-template-columns: 1fr; }
   .twoCols { grid-template-columns: 1fr; }
 }
+  .suggestBox {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  margin-top: -4px;
+}
+
+.suggestItem {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+  justify-content: flex-start;
+  padding: 10px 12px;
+}
+
+.suggestItem:last-child {
+  border-bottom: 0;
+}
+
+.suggestItem:hover {
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.suggestItem span {
+  color: var(--muted);
+  font-weight: 500;
+}
