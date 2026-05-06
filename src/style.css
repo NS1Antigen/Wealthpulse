@@ -353,3 +353,10 @@ h2 { font-size: 18px; display: flex; align-items: center; gap: 8px; }
 .searchResultCard b {
   font-family: "JetBrains Mono", monospace;
 }
+
+.searchActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
