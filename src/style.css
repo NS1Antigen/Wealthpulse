@@ -310,3 +310,24 @@ h2 { font-size: 18px; display: flex; align-items: center; gap: 8px; }
   color: var(--muted);
   font-weight: 500;
 }
+
+.txList {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.txRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.txRow:last-child {
+  border-bottom: 0;
+}
