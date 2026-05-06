@@ -142,7 +142,12 @@ const TICKER_SUGGESTIONS = {
 function needsTicker(type) {
   return ["bitcoin", "crypto_other", "international_stock"].includes(type);
 }
-
+function needsQuantity(type) {
+  return ["bitcoin", "crypto_other", "international_stock", "thai_gold"].includes(type);
+}
+function needsQuantity(type) {
+  return ["bitcoin", "crypto_other", "international_stock", "thai_gold"].includes(type);
+}
 function App() {
   const [theme, setTheme] = useState(getTheme());
   const [page, setPage] = useState("dashboard");
@@ -1121,44 +1126,48 @@ onSave({
           {ASSET_TYPES.map((t) => <option value={t.value} key={t.value}>{t.label}</option>)}
         </select>
 
-        {needsTicker(form.asset_type) && (
+        {needsQuantity(form.asset_type) && (
           <>
-            <label>Ticker Symbol</label>
+            {needsTicker(form.asset_type) && (
+  <>
+    <label>Ticker Symbol</label>
 
-<input
-  value={form.ticker}
-  onChange={(e) => set("ticker", e.target.value.toUpperCase())}
-  placeholder="Type name or ticker e.g. apple, ptt, tesla, btc"
-/>
+    <input
+      value={form.ticker}
+      onChange={(e) => set("ticker", e.target.value.toUpperCase())}
+      placeholder="Type name or ticker e.g. apple, ptt, tesla, btc"
+    />
 
-{searchingTicker && (
-  <div className="muted small">Searching ticker...</div>
+    {searchingTicker && (
+      <div className="muted small">Searching ticker...</div>
+    )}
+
+    {tickerSuggestions.length > 0 && (
+      <div className="suggestBox">
+        {tickerSuggestions.map((item) => (
+          <button
+            type="button"
+            key={`${item.symbol}-${item.exchange}`}
+            className="suggestItem"
+            onClick={() => {
+              set("ticker", item.symbol.toUpperCase());
+              setTickerSuggestions([]);
+            }}
+          >
+            <b>{item.symbol}</b>
+            <span>{item.name}</span>
+          </button>
+        ))}
+      </div>
+    )}
+
+    <datalist id="ticker-suggestions">
+      {(TICKER_SUGGESTIONS[form.asset_type] || []).map((ticker) => (
+        <option key={ticker} value={ticker} />
+      ))}
+    </datalist>
+  </>
 )}
-
-{tickerSuggestions.length > 0 && (
-  <div className="suggestBox">
-    {tickerSuggestions.map((item) => (
-      <button
-        type="button"
-        key={`${item.symbol}-${item.exchange}`}
-        className="suggestItem"
-        onClick={() => {
-          set("ticker", item.symbol.toUpperCase());
-          setTickerSuggestions([]);
-        }}
-      >
-        <b>{item.symbol}</b>
-        <span>{item.name}</span>
-      </button>
-    ))}
-  </div>
-)}
-
-<datalist id="ticker-suggestions">
-  {(TICKER_SUGGESTIONS[form.asset_type] || []).map((ticker) => (
-    <option key={ticker} value={ticker} />
-  ))}
-</datalist>
 
             <label>
   {form.asset_type === "thai_gold"
