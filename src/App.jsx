@@ -286,31 +286,66 @@ function App() {
       a.asset_type === data.asset_type
   );
 
+  const newTx = {
+    id: crypto.randomUUID(),
+    type: "buy",
+    date: new Date().toISOString(),
+    quantity: Number(data.quantity) || 0,
+    price_per_unit: Number(data.purchase_price_per_unit) || null,
+    currency: data.purchase_currency || "THB",
+    note: data.notes || ""
+  };
+
   if (existing && data.quantity > 0) {
-    const oldQty = Number(existing.quantity) || 0;
-    const newQty = Number(data.quantity) || 0;
+    const oldTransactions = existing.transactions || [
+      {
+        id: crypto.randomUUID(),
+        type: "buy",
+        date: existing.createdAt || new Date().toISOString(),
+        quantity: Number(existing.quantity) || 0,
+        price_per_unit: Number(existing.purchase_price_per_unit) || null,
+        currency: existing.purchase_currency || "THB",
+        note: existing.notes || ""
+      }
+    ];
 
-    const oldCost = Number(existing.purchase_price_per_unit) || 0;
-    const newCost = Number(data.purchase_price_per_unit) || 0;
+    const transactions = [...oldTransactions, newTx];
 
-    const totalQty = oldQty + newQty;
+    const totalQty = transactions.reduce(
+      (sum, tx) => sum + (Number(tx.quantity) || 0),
+      0
+    );
 
-    const avgCost =
-      totalQty > 0
-        ? ((oldQty * oldCost) + (newQty * newCost)) / totalQty
-        : 0;
+    const knownCostTx = transactions.filter(
+      (tx) => Number(tx.price_per_unit) > 0 && Number(tx.quantity) > 0
+    );
+
+    const knownQty = knownCostTx.reduce(
+      (sum, tx) => sum + Number(tx.quantity),
+      0
+    );
+
+    const totalKnownCost = knownCostTx.reduce(
+      (sum, tx) => sum + Number(tx.quantity) * Number(tx.price_per_unit),
+      0
+    );
+
+    const avgCost = knownQty > 0 ? totalKnownCost / knownQty : 0;
 
     updateAsset(existing.id, {
       ...existing,
       quantity: totalQty,
       purchase_price_per_unit: avgCost,
-      manual_value_thb:
-        Number(existing.manual_value_thb || 0) +
-        Number(data.manual_value_thb || 0),
-      notes: `${existing.notes || ""}\nAdded ${newQty} ${data.ticker} at ${newCost}`.trim()
+      cost_incomplete: knownQty < totalQty,
+      transactions
     });
   } else {
-    createAsset(data);
+    createAsset({
+      ...data,
+      transactions: [newTx],
+      cost_incomplete:
+        !data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0
+    });
   }
 }
             setModalAsset(null);
@@ -528,13 +563,60 @@ function NetWorthChart({ timeline, currency, hidden }) {
     </section>
   );
 }
+function recalculateAssetFromTransactions(asset, transactions) {
+  const totalQty = transactions.reduce(
+    (sum, tx) => sum + (Number(tx.quantity) || 0),
+    0
+  );
+
+  const knownCostTx = transactions.filter(
+    (tx) => Number(tx.price_per_unit) > 0 && Number(tx.quantity) > 0
+  );
+
+  const knownQty = knownCostTx.reduce(
+    (sum, tx) => sum + Number(tx.quantity),
+    0
+  );
+
+  const totalKnownCost = knownCostTx.reduce(
+    (sum, tx) => sum + Number(tx.quantity) * Number(tx.price_per_unit),
+    0
+  );
+
+  const avgCost = knownQty > 0 ? totalKnownCost / knownQty : 0;
+
+  return {
+    ...asset,
+    quantity: totalQty,
+    purchase_price_per_unit: avgCost,
+    cost_incomplete: knownQty < totalQty,
+    transactions
+  };
+}
 
 function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
   const Icon = TYPE_ICONS[asset.asset_type] || Wallet;
+  const [showTx, setShowTx] = useState(false);
+
+  function deleteTransaction(txId) {
+    if (!confirm("Delete this transaction?")) return;
+
+    const transactions = (asset.transactions || []).filter((tx) => tx.id !== txId);
+    const updated = recalculateAssetFromTransactions(asset, transactions);
+
+    if (transactions.length === 0) {
+      deleteAsset(asset.id);
+    } else {
+      updateAsset(asset.id, updated);
+    }
+
+    location.reload();
+  }
 
   return (
     <div className="assetItem">
       <div className="assetIcon"><Icon size={19} /></div>
+
       <div className="assetMain">
         <div className="assetName">{asset.name}</div>
         <div className="muted small">
@@ -543,15 +625,46 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
           {asset.quantity ? ` · ${asset.quantity} units` : ""}
           {priceData ? ` · ${priceData.source}` : ""}
         </div>
+
+        {asset.cost_incomplete && (
+          <div className="red small">Cost incomplete: some buy price missing</div>
+        )}
+
+        {asset.transactions?.length > 0 && (
+          <button className="ghost" onClick={() => setShowTx(!showTx)}>
+            {showTx ? "Hide" : "Show"} transactions ({asset.transactions.length})
+          </button>
+        )}
+
+        {showTx && (
+          <div className="txList">
+            {asset.transactions.map((tx) => (
+              <div className="txRow" key={tx.id}>
+                <span>
+                  {new Date(tx.date).toLocaleDateString()} · {tx.quantity} units ·{" "}
+                  {tx.price_per_unit
+                    ? `${tx.price_per_unit} ${tx.currency}`
+                    : "cost unknown"}
+                </span>
+                <button className="ghost danger" onClick={() => deleteTransaction(tx.id)}>
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
+
       <div className="assetValue">
         <b>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
         {priceData?.change_24h_percent ? (
           <span className={priceData.change_24h_percent >= 0 ? "green" : "red"}>
-            {priceData.change_24h_percent >= 0 ? "+" : ""}{priceData.change_24h_percent.toFixed(2)}%
+            {priceData.change_24h_percent >= 0 ? "+" : ""}
+            {priceData.change_24h_percent.toFixed(2)}%
           </span>
         ) : null}
       </div>
+
       <div className="miniActions">
         <button className="ghost" onClick={() => onEdit(asset)}><Pencil size={15} /></button>
         <button className="ghost danger" onClick={() => onDelete(asset.id)}><Trash2 size={15} /></button>
@@ -559,7 +672,6 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
     </div>
   );
 }
-
 function ManageAssets({ assets, openAssetForm, editAsset, removeAsset }) {
   return (
     <section className="card">
