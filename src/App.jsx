@@ -244,7 +244,23 @@ function App() {
             }}
           />
         )}
-
+        {page === "search" && (
+  <SearchAssetPage
+    onAdd={(asset) => {
+      setModalAsset({
+        name: asset.name,
+        asset_type: asset.asset_type,
+        ticker: asset.symbol,
+        quantity: "",
+        purchase_price_per_unit: "",
+        purchase_currency: asset.currency || "THB",
+        manual_value_thb: "",
+        use_manual_value: false,
+        notes: ""
+      });
+    }}
+  />
+)}
         {page === "manage" && (
           <ManageAssets
             assets={assets}
@@ -370,6 +386,7 @@ function Header({ page, setPage, theme, setTheme }) {
 
       <nav className="nav">
         <button className={page === "dashboard" ? "active" : ""} onClick={() => setPage("dashboard")}>Dashboard</button>
+        <button className={page === "search" ? "active" : ""} onClick={() => setPage("search")}>Search</button>
         <button className={page === "manage" ? "active" : ""} onClick={() => setPage("manage")}>Assets</button>
         <button className={page === "security" ? "active" : ""} onClick={() => setPage("security")}>Security</button>
         <button className="iconBtn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
@@ -672,6 +689,103 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete }) {
     </div>
   );
 }
+function SearchAssetPage({ onAdd }) {
+  const [query, setQuery] = useState("");
+
+  const LOCAL_ASSETS = [
+    // Crypto
+    { symbol: "BTC", name: "Bitcoin", asset_type: "bitcoin", source: "CoinGecko", currency: "USD" },
+    { symbol: "ETH", name: "Ethereum", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
+    { symbol: "SOL", name: "Solana", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
+    { symbol: "BNB", name: "BNB", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
+    { symbol: "XRP", name: "XRP", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
+    { symbol: "ADA", name: "Cardano", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
+    { symbol: "DOGE", name: "Dogecoin", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
+
+    // US stocks / ETFs
+    { symbol: "AAPL", name: "Apple", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "NVDA", name: "Nvidia", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "MSFT", name: "Microsoft", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "GOOGL", name: "Google / Alphabet", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "TSLA", name: "Tesla", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "SPY", name: "S&P 500 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "VOO", name: "Vanguard S&P 500 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "QQQ", name: "Nasdaq 100 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
+
+    // Thai stocks
+    { symbol: "PTT.BK", name: "PTT", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "LH.BK", name: "Land and Houses", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "AOT.BK", name: "Airports of Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "CPALL.BK", name: "CP All", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "KBANK.BK", name: "Kasikornbank", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "SCB.BK", name: "SCB X", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "ADVANC.BK", name: "AIS Advanced Info Service", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "BDMS.BK", name: "Bangkok Dusit Medical Services", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "DELTA.BK", name: "Delta Electronics Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+
+    // Mutual funds
+    { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+    { symbol: "SCBNDQ", name: "SCB Nasdaq 100 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+    { symbol: "SCBUSA", name: "SCB US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+    { symbol: "SCBGOLD", name: "SCB Gold Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+    { symbol: "K-USA", name: "K US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+    { symbol: "KFUS", name: "Krungsri US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+
+    // Gold
+    { symbol: "XAU", name: "Gold Spot", asset_type: "gold", source: "Market API", currency: "USD" }
+  ];
+
+  const q = query.trim().toLowerCase();
+
+  const results = q.length < 1
+    ? LOCAL_ASSETS.slice(0, 12)
+    : LOCAL_ASSETS.filter((a) =>
+        a.symbol.toLowerCase().includes(q) ||
+        a.name.toLowerCase().includes(q) ||
+        a.asset_type.toLowerCase().includes(q)
+      ).slice(0, 20);
+
+  return (
+    <section className="card">
+      <h1>Search Asset</h1>
+      <p className="muted">
+        Search first, then add the correct ticker to your portfolio.
+      </p>
+
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Type apple, ptt, land, eth, s&p, scb..."
+        autoFocus
+      />
+
+      <div className="searchResults">
+        {results.map((asset) => (
+          <div className="searchResultCard" key={`${asset.symbol}-${asset.asset_type}`}>
+            <div>
+              <b>{asset.symbol}</b>
+              <div>{asset.name}</div>
+              <div className="muted small">
+                {TYPE_LABELS[asset.asset_type] || asset.asset_type} · {asset.source}
+              </div>
+            </div>
+
+            <button onClick={() => onAdd(asset)}>
+              Add Asset
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {results.length === 0 && (
+        <div className="empty">
+          <p>No result. Try ticker symbol directly, e.g. AAPL, PTT.BK, BTC.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ManageAssets({ assets, openAssetForm, editAsset, removeAsset }) {
   return (
     <section className="card">
