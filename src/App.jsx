@@ -64,18 +64,15 @@ import {
 import { motion } from "framer-motion";
 
 const ASSET_TYPES = [
-  { value: "bitcoin", label: "₿ Bitcoin" },
-  { value: "crypto_other", label: "🪙 Other Crypto" },
-  { value: "thai_stock", label: "📈 Thai Stock" },
-  { value: "international_stock", label: "🌐 International Stock / Index" },
-  { value: "gold", label: "🥇 Gold Spot" },
-  { value: "gold_jewelry", label: "💛 Gold Jewelry" },
-  { value: "property", label: "🏠 Property / Condo" },
-  { value: "land", label: "🌿 Land" },
-  { value: "collectible", label: "🎨 Collectible" },
-  { value: "poker_bankroll", label: "🃏 Poker Bankroll" },
-  { value: "cash", label: "💵 Cash / Savings" },
-  { value: "other", label: "📦 Other" }
+  { value: "bitcoin", label: "Bitcoin" },
+  { value: "crypto_other", label: "Other Crypto" },
+  { value: "thai_stock", label: "Thai Stock" },
+  { value: "international_stock", label: "International Stock / Index" },
+  { value: "gold", label: "Gold Spot" },
+  { value: "property", label: "Property / Condo" },
+  { value: "land", label: "Land" },
+  { value: "cash", label: "Cash / Savings" },
+  { value: "other", label: "Other" }
 ];
 
 const TYPE_LABELS = Object.fromEntries(ASSET_TYPES.map((a) => [a.value, a.label.replace(/^.. /, "")]));
@@ -270,7 +267,42 @@ function App() {
           onClose={() => setModalAsset(null)}
           onSave={(data) => {
             if (modalAsset?.id) updateAsset(modalAsset.id, data);
-            else createAsset(data);
+            else {
+  const existing = getAssets().find(
+    (a) =>
+      a.ticker &&
+      data.ticker &&
+      a.ticker.toUpperCase() === data.ticker.toUpperCase() &&
+      a.asset_type === data.asset_type
+  );
+
+  if (existing && data.quantity > 0) {
+    const oldQty = Number(existing.quantity) || 0;
+    const newQty = Number(data.quantity) || 0;
+
+    const oldCost = Number(existing.purchase_price_per_unit) || 0;
+    const newCost = Number(data.purchase_price_per_unit) || 0;
+
+    const totalQty = oldQty + newQty;
+
+    const avgCost =
+      totalQty > 0
+        ? ((oldQty * oldCost) + (newQty * newCost)) / totalQty
+        : 0;
+
+    updateAsset(existing.id, {
+      ...existing,
+      quantity: totalQty,
+      purchase_price_per_unit: avgCost,
+      manual_value_thb:
+        Number(existing.manual_value_thb || 0) +
+        Number(data.manual_value_thb || 0),
+      notes: `${existing.notes || ""}\nAdded ${newQty} ${data.ticker} at ${newCost}`.trim()
+    });
+  } else {
+    createAsset(data);
+  }
+}
             setModalAsset(null);
             refreshAssets();
           }}
