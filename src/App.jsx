@@ -1128,44 +1128,77 @@ onSave({
 
         {needsQuantity(form.asset_type) && (
           <>
-            {needsTicker(form.asset_type) && (
+            <label>
+  {form.asset_type === "thai_gold"
+    ? "Gold Weight (Baht)"
+    : "Quantity / Units"}
+</label>
+
+<input
+  type="number"
+  step="any"
+  value={form.quantity}
+  onChange={(e) => set("quantity", e.target.value)}
+  placeholder={
+    form.asset_type === "thai_gold"
+      ? "Example: 1, 2, 5"
+      : "0.1, 10, 100"
+  }
+/>
+            {needsQuantity(form.asset_type) && (
   <>
-    <label>Ticker Symbol</label>
+    <label>
+      {form.asset_type === "thai_gold"
+        ? "Gold Weight (Baht)"
+        : "Quantity / Units"}
+    </label>
 
     <input
-      value={form.ticker}
-      onChange={(e) => set("ticker", e.target.value.toUpperCase())}
-      placeholder="Type name or ticker e.g. apple, ptt, tesla, btc"
+      type="number"
+      step="any"
+      value={form.quantity}
+      onChange={(e) => set("quantity", e.target.value)}
+      placeholder={
+        form.asset_type === "thai_gold"
+          ? "Example: 1, 2, 5"
+          : "0.1, 10, 100"
+      }
     />
 
-    {searchingTicker && (
-      <div className="muted small">Searching ticker...</div>
-    )}
+    {needsTicker(form.asset_type) && (
+      <>
+        <label>Ticker Symbol</label>
 
-    {tickerSuggestions.length > 0 && (
-      <div className="suggestBox">
-        {tickerSuggestions.map((item) => (
-          <button
-            type="button"
-            key={`${item.symbol}-${item.exchange}`}
-            className="suggestItem"
-            onClick={() => {
-              set("ticker", item.symbol.toUpperCase());
-              setTickerSuggestions([]);
-            }}
-          >
-            <b>{item.symbol}</b>
-            <span>{item.name}</span>
-          </button>
-        ))}
-      </div>
-    )}
+        <input
+          value={form.ticker}
+          onChange={(e) => set("ticker", e.target.value.toUpperCase())}
+          placeholder="Type name or ticker e.g. apple, btc"
+        />
 
-    <datalist id="ticker-suggestions">
-      {(TICKER_SUGGESTIONS[form.asset_type] || []).map((ticker) => (
-        <option key={ticker} value={ticker} />
-      ))}
-    </datalist>
+        {searchingTicker && (
+          <div className="muted small">Searching ticker...</div>
+        )}
+
+        {tickerSuggestions.length > 0 && (
+          <div className="suggestBox">
+            {tickerSuggestions.map((item) => (
+              <button
+                type="button"
+                key={`${item.symbol}-${item.exchange}`}
+                className="suggestItem"
+                onClick={() => {
+                  set("ticker", item.symbol.toUpperCase());
+                  setTickerSuggestions([]);
+                }}
+              >
+                <b>{item.symbol}</b>
+                <span>{item.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </>
+    )}
   </>
 )}
 
