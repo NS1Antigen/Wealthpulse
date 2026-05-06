@@ -413,9 +413,16 @@ function App() {
             if (modalAsset?.id) {
               updateAsset(modalAsset.id, {
                 ...data,
+                quantity: data.asset_type === "cash" ? 0 : data.quantity,
+                ticker: data.asset_type === "cash" ? "" : data.ticker,
+                purchase_price_per_unit: data.asset_type === "cash" ? 0 : data.purchase_price_per_unit,
                 cost_incomplete:
                   data.asset_type !== "cash" &&
-                  (!data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0)
+                  (!data.purchase_price_per_unit || Number(data.purchase_price_per_unit) <= 0),
+                transactions:
+                  data.asset_type === "cash"
+                    ? (modalAsset.transactions || [])
+                    : (modalAsset.transactions || data.transactions || [])
               });
             } else if (data.asset_type === "cash") {
               // Cash/savings works as one simple account with deposit transactions.
@@ -1854,7 +1861,7 @@ function LockScreen({ onUnlock }) {
     }
 
     autoFaceId();
-  }, [faceIdEnabled, setupMode, onUnlock]);
+  }, [faceIdEnabled, setupMode]);
 
   async function submitPin(e) {
     e.preventDefault();
