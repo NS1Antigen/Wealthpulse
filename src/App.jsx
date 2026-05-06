@@ -1028,7 +1028,7 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portf
                   {asset.asset_type === "cash" ? (
                     <>
                       {new Date(tx.date).toLocaleDateString()} · Deposit ·{" "}
-                      {Number(tx.amount ?? tx.quantity || 0).toLocaleString()} {tx.currency || "THB"}
+                      {Number((tx.amount ?? tx.quantity) || 0).toLocaleString()} {tx.currency || "THB"}
                       {tx.note ? ` · ${tx.note}` : ""}
                     </>
                   ) : (
