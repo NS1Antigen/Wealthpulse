@@ -9,6 +9,7 @@ import {
   Globe,
   Landmark,
   Lock,
+  Fingerprint,
   Moon,
   Plus,
   RefreshCw,
@@ -755,20 +756,126 @@ function AssetForm({ editingAsset, onClose, onSave }) {
   );
 }
 
+function bufferToBase64url(buffer) {
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+}
+
+function base64urlToBuffer(base64url) {
+  const base64 = base64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+  const binary = atob(base64 + pad);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+function getFaceIdCredential() {
+  return localStorage.getItem("wp_faceid_credential");
+}
+
+function setFaceIdCredential(id) {
+  localStorage.setItem("wp_faceid_credential", id);
+}
+
+async function enableFaceId() {
+  if (!window.PublicKeyCredential) {
+    alert("Face ID / Touch ID is not supported on this browser.");
+    return false;
+  }
+
+  const available =
+    await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+
+  if (!available) {
+    alert("Face ID / Touch ID is not available on this device.");
+    return false;
+  }
+
+  try {
+    const credential = await navigator.credentials.create({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rp: {
+          name: "WealthPulse",
+        },
+        user: {
+          id: crypto.getRandomValues(new Uint8Array(16)),
+          name: "wealthpulse-user",
+          displayName: "WealthPulse User",
+        },
+        pubKeyCredParams: [
+          { type: "public-key", alg: -7 },
+          { type: "public-key", alg: -257 },
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          userVerification: "required",
+        },
+        timeout: 60000,
+        attestation: "none",
+      },
+    });
+
+    setFaceIdCredential(bufferToBase64url(credential.rawId));
+    alert("Face ID / Touch ID enabled.");
+    return true;
+  } catch {
+    alert("Face ID setup was cancelled or failed.");
+    return false;
+  }
+}
+
+async function unlockWithFaceId() {
+  const savedId = getFaceIdCredential();
+  if (!savedId) return false;
+
+  try {
+    await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        allowCredentials: [
+          {
+            type: "public-key",
+            id: base64urlToBuffer(savedId),
+          },
+        ],
+        userVerification: "required",
+        timeout: 60000,
+      },
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function LockScreen({ onUnlock }) {
   const [pin, setPinInput] = useState("");
   const [newPin, setNewPin] = useState("");
   const [setupMode, setSetupMode] = useState(!hasPinSet());
   const [error, setError] = useState("");
+  const [faceIdEnabled, setFaceIdEnabled] = useState(!!getFaceIdCredential());
 
   async function submitPin(e) {
     e.preventDefault();
+
     if (setupMode) {
       if (newPin.length < 4) {
         setError("PIN must be at least 4 digits");
         return;
       }
+
       await setPin(newPin);
+      setNewPin("");
+
+      const wantFaceId = confirm("Do you want to enable Face ID / Touch ID?");
+      if (wantFaceId) {
+        await enableFaceId();
+        setFaceIdEnabled(!!getFaceIdCredential());
+      }
+
       onUnlock();
       return;
     }
@@ -781,26 +888,86 @@ function LockScreen({ onUnlock }) {
     }
   }
 
+  async function handleFaceIdUnlock() {
+    const ok = await unlockWithFaceId();
+
+    if (ok) {
+      onUnlock();
+    } else {
+      setError("Face ID failed. Use PIN instead.");
+    }
+  }
+
+  async function handleEnableFaceIdFromLock() {
+    const ok = await enableFaceId();
+    setFaceIdEnabled(ok);
+  }
+
   return (
     <div className="lockScreen">
       <div className="lockCard">
-        <div className="brandIcon big"><Wallet size={32} /></div>
+        <div className="brandIcon big">
+          <Wallet size={32} />
+        </div>
+
         <h1>WealthPulse</h1>
         <p className="muted">Private · Local only · No cloud</p>
+
+        {faceIdEnabled && !setupMode && (
+          <button
+            type="button"
+            className="outline"
+            onClick={handleFaceIdUnlock}
+            style={{ marginBottom: 12 }}
+          >
+            <Fingerprint size={16} />
+            Unlock with Face ID / Touch ID
+          </button>
+        )}
+
         <form onSubmit={submitPin} className="stack">
           {setupMode ? (
             <>
               <label>Create PIN</label>
-              <input value={newPin} onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="4–6 digits" autoFocus />
+              <input
+                value={newPin}
+                onChange={(e) =>
+                  setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                inputMode="numeric"
+                placeholder="4–6 digits"
+                autoFocus
+              />
             </>
           ) : (
             <>
               <label>Enter PIN</label>
-              <input value={pin} onChange={(e) => setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="PIN" autoFocus />
+              <input
+                value={pin}
+                onChange={(e) =>
+                  setPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                inputMode="numeric"
+                placeholder="PIN"
+                autoFocus
+              />
             </>
           )}
+
           {error && <p className="red">{error}</p>}
-          <button>{setupMode ? "Create PIN" : "Unlock"}</button>
+
+          <button>{setupMode ? "Create PIN" : "Unlock with PIN"}</button>
+
+          {!faceIdEnabled && !setupMode && (
+            <button
+              type="button"
+              className="outline"
+              onClick={handleEnableFaceIdFromLock}
+            >
+              <Fingerprint size={16} />
+              Enable Face ID / Touch ID
+            </button>
+          )}
         </form>
       </div>
     </div>
