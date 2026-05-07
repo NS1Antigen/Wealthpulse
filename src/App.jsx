@@ -1484,18 +1484,16 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
       const q = String(form.ticker || "").trim();
 
-      // Thai mutual fund should show preset choices even before typing.
-      // This makes SCBS&P500 easy to select and prevents the empty/buggy ticker box.
+      // Thai mutual fund: show preset fund-code dropdown even when the box is empty.
+      // This makes SCBS&P500 easy to select on tap/focus.
       if (form.asset_type === "mutual_fund") {
-        const qLower = q.toLowerCase();
-        const results = MUTUAL_FUND_DATABASE.filter((fund) => {
-          if (!qLower) return true;
-          return (
-            fund.symbol.toLowerCase().includes(qLower) ||
-            fund.name.toLowerCase().includes(qLower) ||
-            fund.amc.toLowerCase().includes(qLower)
-          );
-        }).map((fund) => ({
+        const search = q.toLowerCase();
+        const results = MUTUAL_FUND_DATABASE.filter((fund) =>
+          !search ||
+          fund.symbol.toLowerCase().includes(search) ||
+          fund.name.toLowerCase().includes(search) ||
+          fund.amc.toLowerCase().includes(search)
+        ).map((fund) => ({
           symbol: fund.symbol,
           name: `${fund.name} · ${fund.amc}`,
           exchange: "Thai Mutual Fund"
@@ -1504,13 +1502,13 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         return;
       }
 
-      if (form.asset_type === "bitcoin") {
-        setTickerSuggestions([{ symbol: "BTC", name: "Bitcoin", exchange: "CoinGecko" }]);
+      if (q.length < 2) {
+        setTickerSuggestions([]);
         return;
       }
 
-      if (q.length < 2) {
-        setTickerSuggestions([]);
+      if (form.asset_type === "bitcoin") {
+        setTickerSuggestions([{ symbol: "BTC", name: "Bitcoin", exchange: "CoinGecko" }]);
         return;
       }
 
@@ -1588,6 +1586,18 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           ? false
           : isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
     }));
+
+    if (type === "mutual_fund") {
+      setTickerSuggestions(
+        MUTUAL_FUND_DATABASE.map((fund) => ({
+          symbol: fund.symbol,
+          name: `${fund.name} · ${fund.amc}`,
+          exchange: "Thai Mutual Fund"
+        }))
+      );
+    } else {
+      setTickerSuggestions([]);
+    }
   }
 
   function submit(e) {
@@ -1688,7 +1698,11 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         )}
 
         <label>Asset Type</label>
-        <select value={form.asset_type} onChange={(e) => changeType(e.target.value)}>
+        <select
+          value={form.asset_type}
+          onChange={(e) => changeType(e.target.value)}
+          style={{ width: "100%", minHeight: 46, boxSizing: "border-box", display: "block" }}
+        >
           {ASSET_TYPES.map((t) => <option value={t.value} key={t.value}>{t.label}</option>)}
         </select>
 
@@ -1701,22 +1715,28 @@ function AssetForm({ editingAsset, onClose, onSave }) {
               value={form.quantity}
               onChange={(e) => set("quantity", e.target.value)}
               placeholder={form.asset_type === "thai_gold" ? "Example: 1, 2, 5" : "Example: 0.1, 10, 100"}
+              style={{ width: "100%", minHeight: 46, boxSizing: "border-box", display: "block" }}
             />
           </>
         )}
 
         {needsSymbol(form.asset_type) && (
           <>
-            <label>
-              {form.asset_type === "mutual_fund"
-                ? "Fund Code / Ticker"
-                : needsLiveTicker(form.asset_type)
-                ? "Live Ticker Symbol"
-                : "Symbol / Fund Code"}
-            </label>
+            <label>{needsLiveTicker(form.asset_type) ? "Live Ticker Symbol" : "Symbol / Fund Code"}</label>
             <input
               value={form.ticker}
               onFocus={() => {
+                if (form.asset_type === "mutual_fund") {
+                  setTickerSuggestions(
+                    MUTUAL_FUND_DATABASE.map((fund) => ({
+                      symbol: fund.symbol,
+                      name: `${fund.name} · ${fund.amc}`,
+                      exchange: "Thai Mutual Fund"
+                    }))
+                  );
+                }
+              }}
+              onClick={() => {
                 if (form.asset_type === "mutual_fund") {
                   setTickerSuggestions(
                     MUTUAL_FUND_DATABASE.map((fund) => ({
@@ -1732,9 +1752,10 @@ function AssetForm({ editingAsset, onClose, onSave }) {
                 form.asset_type === "bitcoin" ? "BTC" :
                 form.asset_type === "thai_gold" ? "THAI-GOLD" :
                 form.asset_type === "thai_stock" ? "Example: PTT.BK or PTT" :
-                form.asset_type === "mutual_fund" ? "Example: SCBS&P500" :
+                form.asset_type === "mutual_fund" ? "Tap to choose SCBS&P500 or type fund code" :
                 "Example: AAPL, VOO, ETH"
               }
+              style={{ width: "100%", minHeight: 46, boxSizing: "border-box", display: "block" }}
             />
 
             {searchingTicker && <div className="muted small">Searching ticker...</div>}
