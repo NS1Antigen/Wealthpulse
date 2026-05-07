@@ -114,10 +114,22 @@ function defaultTicker(type) {
   return "";
 }
 
+function normalizeSymbol(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+function isScbSp500Fund(symbol) {
+  const s = normalizeSymbol(symbol);
+  return s === "SCBS&P500" || s === "SCBSP500";
+}
+
 function needsLiveTicker(type) {
-  // Thai gold must be included here so refreshPrices() sends it to priceService.js
-  // for XAU/USD + USD/THB formula calculation.
-  return ["bitcoin", "crypto_other", "thai_gold"].includes(type);
+  // Thai gold and SCBS&P500 mutual fund must be sent to priceService.js
+  // for formula-based price calculation.
+  return ["bitcoin", "crypto_other", "thai_gold", "mutual_fund"].includes(type);
 }
 
 function needsSymbol(type) {
@@ -172,15 +184,16 @@ function valueToThb(value, currency, usdToThb) {
 }
 
 async function fetchLiveUsdToThb(fallback = 34.5) {
-  // Prefer Frankfurter first because it uses ECB reference data.
+  // Prefer ExchangeRate-API first for near-realtime USD/THB.
+  // Frankfurter/ECB is kept only as a backup daily reference source.
   const apis = [
     {
-      name: "Frankfurter / ECB",
-      url: "https://api.frankfurter.app/latest?from=USD&to=THB"
+      name: "ExchangeRate-API realtime",
+      url: "https://open.er-api.com/v6/latest/USD"
     },
     {
-      name: "ExchangeRate-API fallback",
-      url: "https://open.er-api.com/v6/latest/USD"
+      name: "Frankfurter / ECB backup",
+      url: "https://api.frankfurter.app/latest?from=USD&to=THB"
     }
   ];
 
@@ -215,7 +228,11 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
 
   // Manual unit assets normally use quantity × manual unit price.
   // Thai gold is the exception: it should try live formula from priceService first.
-  if (isManualUnitAsset(asset.asset_type) && asset.asset_type !== "thai_gold") {
+  if (
+    isManualUnitAsset(asset.asset_type) &&
+    asset.asset_type !== "thai_gold" &&
+    !(asset.asset_type === "mutual_fund" && isScbSp500Fund(asset.ticker))
+  ) {
     const unitCurrency =
       asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
     return valueToThb(qty * manual, unitCurrency, usdToThb);
@@ -237,9 +254,13 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
     return asset.purchase_currency === "USD" ? manual * usdToThb : manual;
   }
 
-  // For Thai gold, ignore the saved manual flag first and try live formula.
-  // If live formula fails, the code below falls back to manual price.
-  if (asset.asset_type !== "thai_gold" && (asset.use_manual_value || !needsLiveTicker(asset.asset_type))) {
+  // For Thai gold and SCBS&P500, ignore the saved manual flag first and try formula price.
+  // If formula price fails, the code below falls back to manual price.
+  const isAutoFormulaAsset =
+    asset.asset_type === "thai_gold" ||
+    (asset.asset_type === "mutual_fund" && isScbSp500Fund(asset.ticker));
+
+  if (!isAutoFormulaAsset && (asset.use_manual_value || !needsLiveTicker(asset.asset_type))) {
     return manual;
   }
 
@@ -401,7 +422,11 @@ function App() {
                 current_price_currency: defaultCurrentPriceCurrency(asset.asset_type),
                 manual_value_thb: "",
                 // Thai gold should not force manual mode; it uses live formula with manual fallback.
-                use_manual_value: asset.asset_type === "thai_gold" ? false : isManualUnitAsset(asset.asset_type),
+                use_manual_value:
+                  asset.asset_type === "thai_gold" ||
+                  (asset.asset_type === "mutual_fund" && isScbSp500Fund(asset.symbol))
+                    ? false
+                    : isManualUnitAsset(asset.asset_type),
                 notes: ""
               });
             }}
@@ -1185,7 +1210,7 @@ function SearchAssetPage({ onAdd }) {
     { symbol: "BDMS.BK", name: "Bangkok Dusit Medical Services", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
     { symbol: "DELTA.BK", name: "Delta Electronics Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
 
-    { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
+    { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", asset_type: "mutual_fund", source: "Estimated NAV: IVV close × USD/THB", currency: "THB" },
     { symbol: "SCBNDQ", name: "SCB Nasdaq 100 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
     { symbol: "SCBUSA", name: "SCB US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
     { symbol: "SCBGOLD", name: "SCB Gold Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
@@ -1551,7 +1576,10 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       current_price_currency: defaultCurrentPriceCurrency(type),
       purchase_currency: defaultCurrentPriceCurrency(type),
       purchase_price_per_unit: type === "cash" ? "" : f.purchase_price_per_unit,
-      use_manual_value: type === "thai_gold" ? false : isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
+      use_manual_value:
+        type === "thai_gold"
+          ? false
+          : isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
     }));
   }
 
@@ -1716,6 +1744,14 @@ function AssetForm({ editingAsset, onClose, onSave }) {
               You only need to enter your gold weight and buy price.
             </div>
           </div>
+        ) : form.asset_type === "mutual_fund" && isScbSp500Fund(form.ticker) ? (
+          <div className="infoBox">
+            <b>SCBS&P500 NAV estimate is automatic</b>
+            <div className="muted small">
+              The app estimates SCBS&P500 NAV from IVV/iShares Core S&P 500 ETF closing price × realtime USD/THB.
+              You only need to enter your fund units and buy NAV.
+            </div>
+          </div>
         ) : (
           <>
             <label>{getCurrentPriceLabel(form.asset_type)}</label>
@@ -1802,13 +1838,19 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           <p className="muted small">
             Calculation: gold weight × realtime estimated Thai gold price per baht. Buy price is used only for cost basis and P&L.
           </p>
+        ) : form.asset_type === "mutual_fund" && isScbSp500Fund(form.ticker) ? (
+          <p className="muted small">
+            Calculation: fund units × estimated SCBS&P500 NAV. Buy NAV is used only for cost basis and P&L.
+          </p>
         ) : isManualUnitAsset(form.asset_type) && (
           <p className="muted small">
             Calculation: quantity × current price. Buy price is used only for cost basis and P&L.
           </p>
         )}
 
-        {form.asset_type !== "thai_gold" && form.manual_price_updated_at && (
+        {form.asset_type !== "thai_gold" &&
+          !(form.asset_type === "mutual_fund" && isScbSp500Fund(form.ticker)) &&
+          form.manual_price_updated_at && (
           <div className="muted small">
             Manual price updated: {new Date(form.manual_price_updated_at).toLocaleString()}
           </div>
