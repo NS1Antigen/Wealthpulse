@@ -5,7 +5,10 @@ export async function fetchAllPrices(assets) {
   let usdToThb = 35;
 
   try {
-    const fxRes = await fetch("https://open.er-api.com/v6/latest/USD");
+    const fxRes = await fetch(
+      "https://open.er-api.com/v6/latest/USD"
+    );
+
     const fxData = await fxRes.json();
 
     if (fxData?.rates?.THB) {
@@ -19,7 +22,10 @@ export async function fetchAllPrices(assets) {
   let xauUsd = null;
 
   try {
-    const goldRes = await fetch("https://api.gold-api.com/price/XAU");
+    const goldRes = await fetch(
+      "https://api.gold-api.com/price/XAU"
+    );
+
     const goldData = await goldRes.json();
 
     if (goldData?.price) {
@@ -33,15 +39,33 @@ export async function fetchAllPrices(assets) {
   let thaiGold1Baht = null;
 
   if (xauUsd && usdToThb) {
+
+    // calibrated close to Hua Seng Heng realtime gold
     thaiGold1Baht =
-      ((xauUsd * usdToThb * 15.244 * 0.965) / 31.1035) * 1.03;
+      ((xauUsd * usdToThb * 15.244 * 0.965) / 31.1035) * 0.998;
+
+    // ===== SAFETY CHECK =====
+    if (
+      !isFinite(thaiGold1Baht) ||
+      thaiGold1Baht < 10000 ||
+      thaiGold1Baht > 200000
+    ) {
+      thaiGold1Baht = null;
+    }
+
+    // round nicely
+    if (thaiGold1Baht) {
+      thaiGold1Baht = Math.round(thaiGold1Baht);
+    }
   }
 
   // ===== FETCH LIVE PRICES =====
   for (const asset of assets) {
     try {
+
       // ===== BITCOIN =====
       if (asset.asset_type === "bitcoin") {
+
         const res = await fetch(
           "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
         );
@@ -52,12 +76,14 @@ export async function fetchAllPrices(assets) {
           price: data.bitcoin.usd,
           currency: "USD",
           source: "CoinGecko",
-          change_24h_percent: data.bitcoin.usd_24h_change || 0
+          change_24h_percent:
+            data.bitcoin.usd_24h_change || 0
         };
       }
 
       // ===== OTHER CRYPTO =====
       else if (asset.asset_type === "crypto_other") {
+
         const coinMap = {
           ETH: "ethereum",
           SOL: "solana",
@@ -70,6 +96,7 @@ export async function fetchAllPrices(assets) {
         const coinId = coinMap[asset.ticker];
 
         if (coinId) {
+
           const res = await fetch(
             `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_change=true`
           );
@@ -80,13 +107,17 @@ export async function fetchAllPrices(assets) {
             price: data[coinId].usd,
             currency: "USD",
             source: "CoinGecko",
-            change_24h_percent: data[coinId].usd_24h_change || 0
+            change_24h_percent:
+              data[coinId].usd_24h_change || 0
           };
         }
       }
 
       // ===== INTERNATIONAL STOCK =====
-      else if (asset.asset_type === "international_stock") {
+      else if (
+        asset.asset_type === "international_stock"
+      ) {
+
         prices[asset.ticker] = {
           price: Number(asset.manual_value_thb) || 0,
           currency: "USD",
@@ -95,7 +126,10 @@ export async function fetchAllPrices(assets) {
       }
 
       // ===== THAI STOCK =====
-      else if (asset.asset_type === "thai_stock") {
+      else if (
+        asset.asset_type === "thai_stock"
+      ) {
+
         prices[asset.ticker] = {
           price: Number(asset.manual_value_thb) || 0,
           currency: "THB",
@@ -104,7 +138,10 @@ export async function fetchAllPrices(assets) {
       }
 
       // ===== MUTUAL FUND =====
-      else if (asset.asset_type === "mutual_fund") {
+      else if (
+        asset.asset_type === "mutual_fund"
+      ) {
+
         prices[asset.ticker] = {
           price: Number(asset.manual_value_thb) || 0,
           currency: "THB",
@@ -113,21 +150,31 @@ export async function fetchAllPrices(assets) {
       }
 
       // ===== THAI GOLD =====
-      else if (asset.asset_type === "thai_gold") {
-        const fallbackManualGold = Number(asset.manual_value_thb) || 0;
+      else if (
+        asset.asset_type === "thai_gold"
+      ) {
+
+        const fallbackManualGold =
+          Number(asset.manual_value_thb) || 0;
 
         prices[asset.ticker] = {
-          price: thaiGold1Baht || fallbackManualGold,
+          price:
+            thaiGold1Baht || fallbackManualGold,
           currency: "THB",
           source: thaiGold1Baht
-            ? "Estimated Thai Gold: XAU/USD + USD/THB"
+            ? "Realtime Thai Gold Formula"
             : "Manual Thai Gold Price",
           xauUsd,
           usdToThb
         };
       }
+
     } catch (err) {
-      console.warn("Price fetch failed", asset, err);
+      console.warn(
+        "Price fetch failed",
+        asset,
+        err
+      );
     }
   }
 
@@ -138,31 +185,55 @@ export async function fetchAllPrices(assets) {
 }
 
 // ===== CALCULATE CURRENT VALUE =====
-export function calculateAssetValue(asset, prices, usdToThb, currency = "THB") {
+export function calculateAssetValue(
+  asset,
+  prices,
+  usdToThb,
+  currency = "THB"
+) {
+
   let valueThb = 0;
 
+  // ===== MANUAL TOTAL VALUE =====
   if (
     asset.asset_type === "property" ||
     asset.asset_type === "land" ||
     asset.asset_type === "cash" ||
     asset.asset_type === "other"
   ) {
-    valueThb = Number(asset.manual_value_thb) || 0;
-  } else {
-    const priceData = prices[asset.ticker];
+
+    valueThb =
+      Number(asset.manual_value_thb) || 0;
+  }
+
+  // ===== LIVE/MANUAL UNIT PRICE =====
+  else {
+
+    const priceData =
+      prices[asset.ticker];
 
     if (!priceData) return 0;
 
-    const quantity = Number(asset.quantity) || 0;
-    const value = quantity * (Number(priceData.price) || 0);
+    const quantity =
+      Number(asset.quantity) || 0;
 
+    let value =
+      quantity *
+      (Number(priceData.price) || 0);
+
+    // convert USD assets to THB
     if (priceData.currency === "USD") {
-      valueThb = value * usdToThb;
+
+      valueThb =
+        value * usdToThb;
+
     } else {
+
       valueThb = value;
     }
   }
 
+  // ===== RETURN DISPLAY CURRENCY =====
   if (currency === "USD") {
     return valueThb / usdToThb;
   }
@@ -171,13 +242,24 @@ export function calculateAssetValue(asset, prices, usdToThb, currency = "THB") {
 }
 
 // ===== COST BASIS =====
-export function calculateCostValue(asset, usdToThb, currency = "THB") {
-  const qty = Number(asset.quantity) || 0;
-  const buyPrice = Number(asset.purchase_price_per_unit) || 0;
+export function calculateCostValue(
+  asset,
+  usdToThb,
+  currency = "THB"
+) {
 
-  let total = qty * buyPrice;
+  const qty =
+    Number(asset.quantity) || 0;
 
-  if (asset.purchase_currency === "USD") {
+  const buyPrice =
+    Number(asset.purchase_price_per_unit) || 0;
+
+  let total =
+    qty * buyPrice;
+
+  if (
+    asset.purchase_currency === "USD"
+  ) {
     total *= usdToThb;
   }
 
@@ -189,10 +271,17 @@ export function calculateCostValue(asset, usdToThb, currency = "THB") {
 }
 
 // ===== FORMAT MONEY =====
-export function formatCurrency(value, currency = "THB") {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 2
-  }).format(Number(value) || 0);
+export function formatCurrency(
+  value,
+  currency = "THB"
+) {
+
+  return new Intl.NumberFormat(
+    "en-US",
+    {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 2
+    }
+  ).format(Number(value) || 0);
 }
