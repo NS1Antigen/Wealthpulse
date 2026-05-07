@@ -1,12 +1,5 @@
 const THAI_GOLD_PREMIUM = 0.998;
-
-const SCBSP500_REFERENCE_IVV_CLOSE = 737.41;
-const SCBSP500_REFERENCE_NAV = 42.8884;
-const SCBSP500_REFERENCE_USDTHB = 32.23;
-
-const SCBSP500_FUND_FACTOR =
-  SCBSP500_REFERENCE_NAV /
-  (SCBSP500_REFERENCE_IVV_CLOSE * SCBSP500_REFERENCE_USDTHB);
+const SCBSP500_FUND_FACTOR = 0.001804;
 
 function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase().replace(/\s+/g, "");
@@ -19,27 +12,19 @@ function isScbSp500Fund(symbol) {
 
 async function fetchUsdToThb() {
   try {
-    const fxRes = await fetch("https://open.er-api.com/v6/latest/USD", {
-      cache: "no-store"
-    });
-
+    const fxRes = await fetch("https://open.er-api.com/v6/latest/USD", { cache: "no-store" });
     const fxData = await fxRes.json();
     const rate = Number(fxData?.rates?.THB);
-
     if (Number.isFinite(rate) && rate > 0) return rate;
   } catch (err) {
     console.warn("USDTHB fetch failed", err);
   }
-
   return null;
 }
 
 async function fetchXauUsd() {
   try {
-    const goldRes = await fetch("https://api.gold-api.com/price/XAU", {
-      cache: "no-store"
-    });
-
+    const goldRes = await fetch("https://api.gold-api.com/price/XAU", { cache: "no-store" });
     const goldData = await goldRes.json();
 
     const possibleXau =
@@ -50,37 +35,10 @@ async function fetchXauUsd() {
       goldData?.rates?.XAU;
 
     const xauUsd = Number(possibleXau);
-
     if (Number.isFinite(xauUsd) && xauUsd > 0) return xauUsd;
   } catch (err) {
     console.warn("XAU/USD fetch failed", err);
   }
-
-  return null;
-}
-
-async function fetchIvvClose() {
-  try {
-    const res = await fetch(
-      "https://query1.finance.yahoo.com/v8/finance/chart/IVV?range=7d&interval=1d",
-      { cache: "no-store" }
-    );
-
-    const data = await res.json();
-    const closes =
-      data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
-
-    const validCloses = closes
-      .map((v) => Number(v))
-      .filter((v) => Number.isFinite(v) && v > 0);
-
-    if (validCloses.length > 0) {
-      return validCloses[validCloses.length - 1];
-    }
-  } catch (err) {
-    console.warn("IVV close fetch failed", err);
-  }
-
   return null;
 }
 
@@ -88,49 +46,32 @@ function calculateThaiGold1Baht(xauUsd, usdToThb) {
   if (!xauUsd || !usdToThb) return null;
 
   const thaiGold1Baht =
-    ((xauUsd * usdToThb * 15.244 * 0.965) / 31.1035) *
-    THAI_GOLD_PREMIUM;
+    ((xauUsd * usdToThb * 15.244 * 0.965) / 31.1035) * THAI_GOLD_PREMIUM;
 
-  if (
-    !Number.isFinite(thaiGold1Baht) ||
-    thaiGold1Baht < 10000 ||
-    thaiGold1Baht > 200000
-  ) {
+  if (!Number.isFinite(thaiGold1Baht) || thaiGold1Baht < 10000 || thaiGold1Baht > 200000) {
     return null;
   }
 
   return Math.round(thaiGold1Baht);
 }
 
-function calculateScbSp500Nav(ivvClose, usdToThb) {
-  if (!ivvClose || !usdToThb) return null;
+function calculateScbSp500Nav(manualIvvClose, usdToThb) {
+  if (!manualIvvClose || !usdToThb) return null;
 
-  const nav = ivvClose * usdToThb * SCBSP500_FUND_FACTOR;
+  const nav = manualIvvClose * usdToThb * SCBSP500_FUND_FACTOR;
 
-  if (!Number.isFinite(nav) || nav <= 0 || nav > 1000) {
-    return null;
-  }
+  if (!Number.isFinite(nav) || nav <= 0 || nav > 1000) return null;
 
   return Number(nav.toFixed(4));
 }
 
 export async function fetchAllPrices(assets) {
   const prices = {};
-
   const usdToThb = await fetchUsdToThb();
 
   const needsThaiGold = assets.some((a) => a.asset_type === "thai_gold");
-  const needsScbSp500 = assets.some(
-    (a) => a.asset_type === "mutual_fund" && isScbSp500Fund(a.ticker)
-  );
-
-  const [xauUsd, ivvClose] = await Promise.all([
-    needsThaiGold ? fetchXauUsd() : Promise.resolve(null),
-    needsScbSp500 ? fetchIvvClose() : Promise.resolve(null)
-  ]);
-
+  const xauUsd = needsThaiGold ? await fetchXauUsd() : null;
   const thaiGold1Baht = calculateThaiGold1Baht(xauUsd, usdToThb);
-  const scbSp500Nav = calculateScbSp500Nav(ivvClose, usdToThb);
 
   for (const asset of assets) {
     try {
@@ -139,7 +80,6 @@ export async function fetchAllPrices(assets) {
           "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
           { cache: "no-store" }
         );
-
         const data = await res.json();
 
         prices[asset.ticker] = {
@@ -167,7 +107,6 @@ export async function fetchAllPrices(assets) {
             `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_change=true`,
             { cache: "no-store" }
           );
-
           const data = await res.json();
 
           prices[asset.ticker] = {
@@ -197,15 +136,19 @@ export async function fetchAllPrices(assets) {
 
       else if (asset.asset_type === "mutual_fund") {
         if (isScbSp500Fund(asset.ticker)) {
+          const manualIvvClose = Number(asset.manual_ivv_close_price) || 0;
+          const scbSp500Nav = calculateScbSp500Nav(manualIvvClose, usdToThb);
+
           prices[asset.ticker] = {
             price: scbSp500Nav || Number(asset.manual_value_thb) || 0,
             currency: "THB",
             source: scbSp500Nav
-              ? "Estimated SCBS&P500 NAV: IVV close × USD/THB"
+              ? "Manual IVV Close × Realtime USDTHB"
               : "Manual NAV",
-            ivvClose,
+            manualIvvClose,
             usdToThb,
-            fundFactor: SCBSP500_FUND_FACTOR
+            fundFactor: SCBSP500_FUND_FACTOR,
+            ivvLastUpdated: asset.ivv_last_updated || null
           };
         } else {
           prices[asset.ticker] = {
@@ -254,10 +197,9 @@ export function calculateAssetValue(asset, prices, usdToThb, currency = "THB") {
     const quantity = Number(asset.quantity) || 0;
     const value = quantity * (Number(priceData.price) || 0);
 
-    valueThb =
-      priceData.currency === "USD"
-        ? value * safeUsdToThb
-        : value;
+    valueThb = priceData.currency === "USD"
+      ? value * safeUsdToThb
+      : value;
   }
 
   return currency === "USD" ? valueThb / safeUsdToThb : valueThb;
