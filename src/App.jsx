@@ -421,8 +421,6 @@ function App() {
                 purchase_currency: asset.currency || defaultCurrentPriceCurrency(asset.asset_type),
                 current_price_currency: defaultCurrentPriceCurrency(asset.asset_type),
                 manual_value_thb: "",
-                manual_ivv_close_price: "",
-                ivv_last_updated: null,
                 // Thai gold should not force manual mode; it uses live formula with manual fallback.
                 use_manual_value:
                   asset.asset_type === "thai_gold" ||
@@ -584,8 +582,6 @@ function App() {
                   cost_incomplete: knownQty < totalQty,
                   current_price_currency: data.current_price_currency || existing.current_price_currency,
                   manual_value_thb: data.manual_value_thb,
-                  manual_ivv_close_price: data.manual_ivv_close_price,
-                  ivv_last_updated: data.ivv_last_updated,
                   use_manual_value: data.use_manual_value,
                   manual_price_updated_at: data.manual_price_updated_at,
                   transactions
@@ -1152,9 +1148,7 @@ function SearchAssetPage({ onAdd }) {
       asset_type: asset.asset_type,
       ticker: asset.symbol,
       quantity: 1,
-      manual_value_thb: 0,
-      manual_ivv_close_price: asset.symbol === "SCBS&P500" ? 737.41 : "",
-      ivv_last_updated: null
+      manual_value_thb: 0
     };
 
     try {
@@ -1462,8 +1456,6 @@ function AssetForm({ editingAsset, onClose, onSave }) {
     ticker: editingAsset?.ticker || defaultTicker(editingAsset?.asset_type || "bitcoin"),
     quantity: editingAsset?.quantity || "",
     manual_value_thb: editingAsset?.manual_value_thb || "",
-    manual_ivv_close_price: editingAsset?.manual_ivv_close_price || "",
-    ivv_last_updated: editingAsset?.ivv_last_updated || null,
     current_price_currency: editingAsset?.current_price_currency || defaultCurrentPriceCurrency(editingAsset?.asset_type || "bitcoin"),
     use_manual_value: !!editingAsset?.use_manual_value,
     purchase_price_per_unit: editingAsset?.purchase_price_per_unit || "",
@@ -1491,17 +1483,19 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       }
 
       const q = String(form.ticker || "").trim();
-      if (q.length < 2) {
-        setTickerSuggestions([]);
-        return;
-      }
 
+      // Thai mutual fund should show preset choices even before typing.
+      // This makes SCBS&P500 easy to select and prevents the empty/buggy ticker box.
       if (form.asset_type === "mutual_fund") {
-        const results = MUTUAL_FUND_DATABASE.filter((fund) =>
-          fund.symbol.toLowerCase().includes(q.toLowerCase()) ||
-          fund.name.toLowerCase().includes(q.toLowerCase()) ||
-          fund.amc.toLowerCase().includes(q.toLowerCase())
-        ).map((fund) => ({
+        const qLower = q.toLowerCase();
+        const results = MUTUAL_FUND_DATABASE.filter((fund) => {
+          if (!qLower) return true;
+          return (
+            fund.symbol.toLowerCase().includes(qLower) ||
+            fund.name.toLowerCase().includes(qLower) ||
+            fund.amc.toLowerCase().includes(qLower)
+          );
+        }).map((fund) => ({
           symbol: fund.symbol,
           name: `${fund.name} · ${fund.amc}`,
           exchange: "Thai Mutual Fund"
@@ -1512,6 +1506,11 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
       if (form.asset_type === "bitcoin") {
         setTickerSuggestions([{ symbol: "BTC", name: "Bitcoin", exchange: "CoinGecko" }]);
+        return;
+      }
+
+      if (q.length < 2) {
+        setTickerSuggestions([]);
         return;
       }
 
@@ -1569,8 +1568,6 @@ function AssetForm({ editingAsset, onClose, onSave }) {
             isManualUnitAsset(asset.asset_type) ||
             ["property", "land", "other"].includes(asset.asset_type),
       manual_value_thb: "",
-      manual_ivv_close_price: asset.manual_ivv_close_price || "",
-      ivv_last_updated: asset.ivv_last_updated || null,
       notes: asset.asset_type === "cash" ? "" : (asset.notes || "")
     }));
     setShowSavedAssetSuggestions(false);
@@ -1583,8 +1580,6 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       ticker: defaultTicker(type),
       quantity: type === "cash" ? "" : f.quantity,
       manual_value_thb: "",
-      manual_ivv_close_price: "",
-      ivv_last_updated: null,
       current_price_currency: defaultCurrentPriceCurrency(type),
       purchase_currency: defaultCurrentPriceCurrency(type),
       purchase_price_per_unit: type === "cash" ? "" : f.purchase_price_per_unit,
@@ -1600,8 +1595,6 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
     const quantity = form.asset_type === "cash" ? 0 : safeNumber(form.quantity);
     const manualValue = safeNumber(form.manual_value_thb);
-    const manualIvvClose = safeNumber(form.manual_ivv_close_price);
-    const isScbSp500Asset = form.asset_type === "mutual_fund" && isScbSp500Fund(form.ticker);
 
     onSave({
       name: form.name.trim(),
@@ -1616,15 +1609,11 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       current_price_currency: form.current_price_currency || defaultCurrentPriceCurrency(form.asset_type),
       use_manual_value: form.asset_type === "cash"
         ? true
-        : form.asset_type === "thai_gold" || isScbSp500Asset
+        : form.asset_type === "thai_gold"
         ? false
         : isManualUnitAsset(form.asset_type)
         ? true
         : !!form.use_manual_value,
-      manual_ivv_close_price: isScbSp500Asset ? manualIvvClose : "",
-      ivv_last_updated: isScbSp500Asset && manualIvvClose
-        ? new Date().toISOString()
-        : form.ivv_last_updated,
       purchase_price_per_unit: form.asset_type === "cash" ? 0 : safeNumber(form.purchase_price_per_unit),
       purchase_currency: form.purchase_currency,
       notes: form.notes,
@@ -1718,9 +1707,26 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
         {needsSymbol(form.asset_type) && (
           <>
-            <label>{needsLiveTicker(form.asset_type) ? "Live Ticker Symbol" : "Symbol / Fund Code"}</label>
+            <label>
+              {form.asset_type === "mutual_fund"
+                ? "Fund Code / Ticker"
+                : needsLiveTicker(form.asset_type)
+                ? "Live Ticker Symbol"
+                : "Symbol / Fund Code"}
+            </label>
             <input
               value={form.ticker}
+              onFocus={() => {
+                if (form.asset_type === "mutual_fund") {
+                  setTickerSuggestions(
+                    MUTUAL_FUND_DATABASE.map((fund) => ({
+                      symbol: fund.symbol,
+                      name: `${fund.name} · ${fund.amc}`,
+                      exchange: "Thai Mutual Fund"
+                    }))
+                  );
+                }
+              }}
               onChange={(e) => set("ticker", e.target.value.toUpperCase())}
               placeholder={
                 form.asset_type === "bitcoin" ? "BTC" :
@@ -1764,68 +1770,11 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </div>
         ) : form.asset_type === "mutual_fund" && isScbSp500Fund(form.ticker) ? (
           <div className="infoBox">
-            <b>SCBS&P500 estimate uses manual IVV previous-day close</b>
+            <b>SCBS&P500 NAV estimate is automatic</b>
             <div className="muted small">
-              No Alpha Vantage or hidden IVV API. Enter the latest completed IVV market close manually, then the app calculates:
-              IVV close × realtime USD/THB × fund factor.
+              The app estimates SCBS&P500 NAV from IVV/iShares Core S&P 500 ETF closing price × realtime USD/THB.
+              You only need to enter your fund units and buy NAV.
             </div>
-
-            <div
-              className="infoBox"
-              style={{ marginTop: 10, cursor: "pointer" }}
-              onClick={() => window.open("https://www.tradingview.com/chart/?symbol=AMEX%3AIVV", "_blank", "noopener,noreferrer")}
-            >
-              <b>Latest IVV Previous-Day Closing Price</b>
-              <div className="muted small">
-                Tap to view IVV chart and use the latest completed market close price.
-              </div>
-              <div className="muted small">
-                Current manual IVV close: {form.manual_ivv_close_price ? `$${form.manual_ivv_close_price}` : "not entered"}
-              </div>
-            </div>
-
-            <label>Manual IVV Close Price (Previous Market Day)</label>
-            <input
-              type="number"
-              step="any"
-              value={form.manual_ivv_close_price}
-              onChange={(e) => set("manual_ivv_close_price", e.target.value)}
-              placeholder="Example: 737.41"
-            />
-
-            <div className="actions left">
-              <button
-                type="button"
-                className="outline"
-                onClick={() => window.open("https://www.tradingview.com/chart/?symbol=AMEX%3AIVV", "_blank", "noopener,noreferrer")}
-              >
-                Open IVV Chart
-              </button>
-
-              <button
-                type="button"
-                className="outline"
-                onClick={() => {
-                  if (form.manual_ivv_close_price) {
-                    navigator.clipboard?.writeText(String(form.manual_ivv_close_price));
-                    alert("Copied IVV close price");
-                  }
-                }}
-                disabled={!form.manual_ivv_close_price}
-              >
-                Copy IVV Price
-              </button>
-            </div>
-
-            {form.ivv_last_updated ? (
-              <div className="muted small">
-                Last manual IVV update: {new Date(form.ivv_last_updated).toLocaleString()}
-              </div>
-            ) : (
-              <div className="muted small">
-                Last manual IVV update: not saved yet
-              </div>
-            )}
           </div>
         ) : (
           <>
