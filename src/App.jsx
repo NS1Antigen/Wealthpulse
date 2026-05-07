@@ -66,7 +66,7 @@ const ASSET_TYPES = [
   { value: "crypto_other", label: "Other Crypto" },
   { value: "international_stock", label: "International Stock / ETF" },
   { value: "thai_stock", label: "Thai Stock - Manual Price" },
-  { value: "mutual_fund", label: "Thai Mutual Fund - Manual NAV" },
+  { value: "mutual_fund", label: "Thai Mutual Fund" },
   { value: "thai_gold", label: "Thai Gold 96.5% - Realtime Formula" },
   { value: "property", label: "Property / Condo" },
   { value: "land", label: "Land" },
@@ -1310,7 +1310,7 @@ function ManageAssets({ assets, openAssetForm, editAsset, removeAsset }) {
             <span>{TYPE_LABELS[a.asset_type]}</span>
             <span>{a.ticker || "—"}</span>
             <span>{a.asset_type === "cash" ? "—" : (a.quantity || "—")}</span>
-            <span>{a.asset_type === "thai_gold" ? "Realtime formula" : (a.manual_value_thb ? Number(a.manual_value_thb).toLocaleString() : "—")}</span>
+            <span>{a.asset_type === "thai_gold" ? "Realtime formula" : (a.asset_type === "mutual_fund" && isScbSp500Fund(a.ticker)) ? "Estimated NAV" : (a.manual_value_thb ? Number(a.manual_value_thb).toLocaleString() : "—")}</span>
             <span className="rightBtns">
               <button className="ghost" onClick={() => editAsset(a)}><Pencil size={15} /></button>
               <button className="ghost danger" onClick={() => removeAsset(a.id)}><Trash2 size={15} /></button>
