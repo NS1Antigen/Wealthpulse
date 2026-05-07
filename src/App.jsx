@@ -67,7 +67,7 @@ const ASSET_TYPES = [
   { value: "international_stock", label: "International Stock / ETF" },
   { value: "thai_stock", label: "Thai Stock - Manual Price" },
   { value: "mutual_fund", label: "Thai Mutual Fund - Manual NAV" },
-  { value: "thai_gold", label: "Thai Gold 96.5% - Manual Price" },
+  { value: "thai_gold", label: "Thai Gold 96.5% - Realtime Formula" },
   { value: "property", label: "Property / Condo" },
   { value: "land", label: "Land" },
   { value: "cash", label: "Cash / Savings" },
@@ -1192,7 +1192,7 @@ function SearchAssetPage({ onAdd }) {
     { symbol: "K-USA", name: "K US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
     { symbol: "KFUS", name: "Krungsri US Equity Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
 
-    { symbol: "THAI-GOLD", name: "Thai Gold 96.5%", asset_type: "thai_gold", source: "Manual price per baht", currency: "THB" }
+    { symbol: "THAI-GOLD", name: "Thai Gold 96.5%", asset_type: "thai_gold", source: "Realtime XAU/USD + USD/THB formula", currency: "THB" }
   ];
 
   const q = query.trim().toLowerCase();
@@ -1285,7 +1285,7 @@ function ManageAssets({ assets, openAssetForm, editAsset, removeAsset }) {
             <span>{TYPE_LABELS[a.asset_type]}</span>
             <span>{a.ticker || "—"}</span>
             <span>{a.asset_type === "cash" ? "—" : (a.quantity || "—")}</span>
-            <span>{a.manual_value_thb ? Number(a.manual_value_thb).toLocaleString() : "—"}</span>
+            <span>{a.asset_type === "thai_gold" ? "Realtime formula" : (a.manual_value_thb ? Number(a.manual_value_thb).toLocaleString() : "—")}</span>
             <span className="rightBtns">
               <button className="ghost" onClick={() => editAsset(a)}><Pencil size={15} /></button>
               <button className="ghost danger" onClick={() => removeAsset(a.id)}><Trash2 size={15} /></button>
@@ -1530,9 +1530,11 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       purchase_currency: asset.asset_type === "cash" ? "THB" : (asset.purchase_currency || defaultCurrentPriceCurrency(asset.asset_type)),
       purchase_price_per_unit: asset.asset_type === "cash" ? "" : f.purchase_price_per_unit,
       use_manual_value:
-        asset.asset_type === "cash" ||
-        isManualUnitAsset(asset.asset_type) ||
-        ["property", "land", "other"].includes(asset.asset_type),
+        asset.asset_type === "thai_gold"
+          ? false
+          : asset.asset_type === "cash" ||
+            isManualUnitAsset(asset.asset_type) ||
+            ["property", "land", "other"].includes(asset.asset_type),
       manual_value_thb: "",
       notes: asset.asset_type === "cash" ? "" : (asset.notes || "")
     }));
@@ -1549,7 +1551,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       current_price_currency: defaultCurrentPriceCurrency(type),
       purchase_currency: defaultCurrentPriceCurrency(type),
       purchase_price_per_unit: type === "cash" ? "" : f.purchase_price_per_unit,
-      use_manual_value: isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
+      use_manual_value: type === "thai_gold" ? false : isManualUnitAsset(type) || ["property", "land", "cash", "other"].includes(type)
     }));
   }
 
@@ -1706,21 +1708,32 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </>
         )}
 
-        <label>{getCurrentPriceLabel(form.asset_type)}</label>
-        <input
-          type="number"
-          step="any"
-          value={form.manual_value_thb}
-          onChange={(e) => set("manual_value_thb", e.target.value)}
-          placeholder={
-            form.asset_type === "thai_gold" ? "Example: 52000 = current gold price per baht" :
-            form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
-            form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
-            form.asset_type === "international_stock" ? "Example: 210 = current price/share" :
-            form.asset_type === "cash" ? "Example: 100000 = cash amount" :
-            "Use for property/manual fallback"
-          }
-        />
+        {form.asset_type === "thai_gold" ? (
+          <div className="infoBox">
+            <b>Thai Gold price is automatic</b>
+            <div className="muted small">
+              The app calculates Thai gold 96.5% per 1 baht from realtime XAU/USD × USD/THB formula.
+              You only need to enter your gold weight and buy price.
+            </div>
+          </div>
+        ) : (
+          <>
+            <label>{getCurrentPriceLabel(form.asset_type)}</label>
+            <input
+              type="number"
+              step="any"
+              value={form.manual_value_thb}
+              onChange={(e) => set("manual_value_thb", e.target.value)}
+              placeholder={
+                form.asset_type === "thai_stock" ? "Example: 35.50 = current price/share" :
+                form.asset_type === "mutual_fund" ? "Example: 15.1234 = current NAV/unit" :
+                form.asset_type === "international_stock" ? "Example: 210 = current price/share" :
+                form.asset_type === "cash" ? "Example: 100000 = cash amount" :
+                "Use for property/manual fallback"
+              }
+            />
+          </>
+        )}
 
         {form.asset_type === "international_stock" && (
           <div>
@@ -1785,13 +1798,17 @@ function AssetForm({ editingAsset, onClose, onSave }) {
           </div>
         )}
 
-        {isManualUnitAsset(form.asset_type) && (
+        {form.asset_type === "thai_gold" ? (
+          <p className="muted small">
+            Calculation: gold weight × realtime estimated Thai gold price per baht. Buy price is used only for cost basis and P&L.
+          </p>
+        ) : isManualUnitAsset(form.asset_type) && (
           <p className="muted small">
             Calculation: quantity × current price. Buy price is used only for cost basis and P&L.
           </p>
         )}
 
-        {form.manual_price_updated_at && (
+        {form.asset_type !== "thai_gold" && form.manual_price_updated_at && (
           <div className="muted small">
             Manual price updated: {new Date(form.manual_price_updated_at).toLocaleString()}
           </div>
