@@ -5,10 +5,7 @@ export async function fetchAllPrices(assets) {
   let usdToThb = 35;
 
   try {
-    const fxRes = await fetch(
-      "https://open.er-api.com/v6/latest/USD"
-    );
-
+    const fxRes = await fetch("https://open.er-api.com/v6/latest/USD");
     const fxData = await fxRes.json();
 
     if (fxData?.rates?.THB) {
@@ -16,6 +13,28 @@ export async function fetchAllPrices(assets) {
     }
   } catch (err) {
     console.warn("USDTHB fetch failed", err);
+  }
+
+  // ===== REALTIME XAU/USD =====
+  let xauUsd = null;
+
+  try {
+    const goldRes = await fetch("https://api.gold-api.com/price/XAU");
+    const goldData = await goldRes.json();
+
+    if (goldData?.price) {
+      xauUsd = Number(goldData.price);
+    }
+  } catch (err) {
+    console.warn("XAU/USD fetch failed", err);
+  }
+
+  // ===== CALCULATE THAI GOLD 1 BAHT =====
+  let thaiGold1Baht = null;
+
+  if (xauUsd && usdToThb) {
+    thaiGold1Baht =
+      ((xauUsd * usdToThb * 15.244 * 0.965) / 31.1035) * 1.03;
   }
 
   // ===== FETCH LIVE PRICES =====
@@ -33,8 +52,7 @@ export async function fetchAllPrices(assets) {
           price: data.bitcoin.usd,
           currency: "USD",
           source: "CoinGecko",
-          change_24h_percent:
-            data.bitcoin.usd_24h_change || 0
+          change_24h_percent: data.bitcoin.usd_24h_change || 0
         };
       }
 
@@ -62,17 +80,13 @@ export async function fetchAllPrices(assets) {
             price: data[coinId].usd,
             currency: "USD",
             source: "CoinGecko",
-            change_24h_percent:
-              data[coinId].usd_24h_change || 0
+            change_24h_percent: data[coinId].usd_24h_change || 0
           };
         }
       }
 
       // ===== INTERNATIONAL STOCK =====
-      else if (
-        asset.asset_type === "international_stock"
-      ) {
-        // uses MANUAL current price per unit
+      else if (asset.asset_type === "international_stock") {
         prices[asset.ticker] = {
           price: Number(asset.manual_value_thb) || 0,
           currency: "USD",
@@ -100,10 +114,16 @@ export async function fetchAllPrices(assets) {
 
       // ===== THAI GOLD =====
       else if (asset.asset_type === "thai_gold") {
+        const fallbackManualGold = Number(asset.manual_value_thb) || 0;
+
         prices[asset.ticker] = {
-          price: Number(asset.manual_value_thb) || 0,
+          price: thaiGold1Baht || fallbackManualGold,
           currency: "THB",
-          source: "Thai Gold Price"
+          source: thaiGold1Baht
+            ? "Estimated Thai Gold: XAU/USD + USD/THB"
+            : "Manual Thai Gold Price",
+          xauUsd,
+          usdToThb
         };
       }
     } catch (err) {
@@ -118,15 +138,9 @@ export async function fetchAllPrices(assets) {
 }
 
 // ===== CALCULATE CURRENT VALUE =====
-export function calculateAssetValue(
-  asset,
-  prices,
-  usdToThb,
-  currency = "THB"
-) {
+export function calculateAssetValue(asset, prices, usdToThb, currency = "THB") {
   let valueThb = 0;
 
-  // ===== MANUAL TOTAL VALUE =====
   if (
     asset.asset_type === "property" ||
     asset.asset_type === "land" ||
@@ -134,20 +148,14 @@ export function calculateAssetValue(
     asset.asset_type === "other"
   ) {
     valueThb = Number(asset.manual_value_thb) || 0;
-  }
-
-  // ===== LIVE/MANUAL UNIT PRICE =====
-  else {
+  } else {
     const priceData = prices[asset.ticker];
 
     if (!priceData) return 0;
 
     const quantity = Number(asset.quantity) || 0;
+    const value = quantity * (Number(priceData.price) || 0);
 
-    let value =
-      quantity * (Number(priceData.price) || 0);
-
-    // convert USD assets to THB
     if (priceData.currency === "USD") {
       valueThb = value * usdToThb;
     } else {
@@ -155,7 +163,6 @@ export function calculateAssetValue(
     }
   }
 
-  // ===== RETURN DISPLAY CURRENCY =====
   if (currency === "USD") {
     return valueThb / usdToThb;
   }
@@ -164,17 +171,11 @@ export function calculateAssetValue(
 }
 
 // ===== COST BASIS =====
-export function calculateCostValue(
-  asset,
-  usdToThb,
-  currency = "THB"
-) {
+export function calculateCostValue(asset, usdToThb, currency = "THB") {
   const qty = Number(asset.quantity) || 0;
-  const buyPrice =
-    Number(asset.purchase_price_per_unit) || 0;
+  const buyPrice = Number(asset.purchase_price_per_unit) || 0;
 
-  let total =
-    qty * buyPrice;
+  let total = qty * buyPrice;
 
   if (asset.purchase_currency === "USD") {
     total *= usdToThb;
@@ -188,10 +189,7 @@ export function calculateCostValue(
 }
 
 // ===== FORMAT MONEY =====
-export function formatCurrency(
-  value,
-  currency = "THB"
-) {
+export function formatCurrency(value, currency = "THB") {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
