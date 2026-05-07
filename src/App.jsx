@@ -1804,7 +1804,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
               type="button"
               className="outline"
               style={{ marginTop: 10 }}
-              onClick={() => window.open("https://www.tradingview.com/symbols/AMEX-IVV/", "_blank", "noopener,noreferrer")}
+              onClick={() => window.open("https://www.tradingview.com/chart/?symbol=AMEX:IVV", "_blank", "noopener,noreferrer")}
             >
               Open IVV Chart / Reference
             </button>
