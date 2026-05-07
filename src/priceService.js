@@ -26,9 +26,7 @@ async function fetchUsdToThb() {
     const fxData = await fxRes.json();
     const rate = Number(fxData?.rates?.THB);
 
-    if (Number.isFinite(rate) && rate > 0) {
-      return rate;
-    }
+    if (Number.isFinite(rate) && rate > 0) return rate;
   } catch (err) {
     console.warn("USDTHB fetch failed", err);
   }
@@ -53,9 +51,7 @@ async function fetchXauUsd() {
 
     const xauUsd = Number(possibleXau);
 
-    if (Number.isFinite(xauUsd) && xauUsd > 0) {
-      return xauUsd;
-    }
+    if (Number.isFinite(xauUsd) && xauUsd > 0) return xauUsd;
   } catch (err) {
     console.warn("XAU/USD fetch failed", err);
   }
@@ -71,8 +67,8 @@ async function fetchIvvClose() {
     );
 
     const data = await res.json();
-    const result = data?.chart?.result?.[0];
-    const closes = result?.indicators?.quote?.[0]?.close || [];
+    const closes =
+      data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || [];
 
     const validCloses = closes
       .map((v) => Number(v))
@@ -124,7 +120,6 @@ export async function fetchAllPrices(assets) {
   const usdToThb = await fetchUsdToThb();
 
   const needsThaiGold = assets.some((a) => a.asset_type === "thai_gold");
-
   const needsScbSp500 = assets.some(
     (a) => a.asset_type === "mutual_fund" && isScbSp500Fund(a.ticker)
   );
@@ -238,18 +233,10 @@ export async function fetchAllPrices(assets) {
     }
   }
 
-  return {
-    prices,
-    usdToThb
-  };
+  return { prices, usdToThb };
 }
 
-export function calculateAssetValue(
-  asset,
-  prices,
-  usdToThb,
-  currency = "THB"
-) {
+export function calculateAssetValue(asset, prices, usdToThb, currency = "THB") {
   const safeUsdToThb = Number(usdToThb) || 1;
   let valueThb = 0;
 
@@ -262,31 +249,21 @@ export function calculateAssetValue(
     valueThb = Number(asset.manual_value_thb) || 0;
   } else {
     const priceData = prices[asset.ticker];
-
     if (!priceData) return 0;
 
     const quantity = Number(asset.quantity) || 0;
     const value = quantity * (Number(priceData.price) || 0);
 
-    if (priceData.currency === "USD") {
-      valueThb = value * safeUsdToThb;
-    } else {
-      valueThb = value;
-    }
+    valueThb =
+      priceData.currency === "USD"
+        ? value * safeUsdToThb
+        : value;
   }
 
-  if (currency === "USD") {
-    return valueThb / safeUsdToThb;
-  }
-
-  return valueThb;
+  return currency === "USD" ? valueThb / safeUsdToThb : valueThb;
 }
 
-export function calculateCostValue(
-  asset,
-  usdToThb,
-  currency = "THB"
-) {
+export function calculateCostValue(asset, usdToThb, currency = "THB") {
   const safeUsdToThb = Number(usdToThb) || 1;
   const qty = Number(asset.quantity) || 0;
   const buyPrice = Number(asset.purchase_price_per_unit) || 0;
@@ -297,11 +274,7 @@ export function calculateCostValue(
     total *= safeUsdToThb;
   }
 
-  if (currency === "USD") {
-    return total / safeUsdToThb;
-  }
-
-  return total;
+  return currency === "USD" ? total / safeUsdToThb : total;
 }
 
 export function formatCurrency(value, currency = "THB") {
