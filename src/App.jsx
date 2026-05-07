@@ -110,15 +110,18 @@ const COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#06b6d4"
 
 function defaultTicker(type) {
   if (type === "bitcoin") return "BTC";
+  if (type === "thai_gold") return "THAI-GOLD";
   return "";
 }
 
 function needsLiveTicker(type) {
-  return ["bitcoin", "crypto_other"].includes(type);
+  // Thai gold must be included here so refreshPrices() sends it to priceService.js
+  // for XAU/USD + USD/THB formula calculation.
+  return ["bitcoin", "crypto_other", "thai_gold"].includes(type);
 }
 
 function needsSymbol(type) {
-  return ["bitcoin", "crypto_other", "international_stock", "thai_stock", "mutual_fund"].includes(type);
+  return ["bitcoin", "crypto_other", "international_stock", "thai_stock", "mutual_fund", "thai_gold"].includes(type);
 }
 
 function needsQuantity(type) {
@@ -210,7 +213,9 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
   const qty = safeNumber(asset.quantity);
   const manual = safeNumber(asset.manual_value_thb);
 
-  if (isManualUnitAsset(asset.asset_type)) {
+  // Manual unit assets normally use quantity × manual unit price.
+  // Thai gold is the exception: it should try live formula from priceService first.
+  if (isManualUnitAsset(asset.asset_type) && asset.asset_type !== "thai_gold") {
     const unitCurrency =
       asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type);
     return valueToThb(qty * manual, unitCurrency, usdToThb);
@@ -232,7 +237,9 @@ function getAssetCurrentValueThb(asset, prices, usdToThb) {
     return asset.purchase_currency === "USD" ? manual * usdToThb : manual;
   }
 
-  if (asset.use_manual_value || !needsLiveTicker(asset.asset_type)) {
+  // For Thai gold, ignore the saved manual flag first and try live formula.
+  // If live formula fails, the code below falls back to manual price.
+  if (asset.asset_type !== "thai_gold" && (asset.use_manual_value || !needsLiveTicker(asset.asset_type))) {
     return manual;
   }
 
@@ -393,7 +400,8 @@ function App() {
                 purchase_currency: asset.currency || defaultCurrentPriceCurrency(asset.asset_type),
                 current_price_currency: defaultCurrentPriceCurrency(asset.asset_type),
                 manual_value_thb: "",
-                use_manual_value: isManualUnitAsset(asset.asset_type),
+                // Thai gold should not force manual mode; it uses live formula with manual fallback.
+                use_manual_value: asset.asset_type === "thai_gold" ? false : isManualUnitAsset(asset.asset_type),
                 notes: ""
               });
             }}
@@ -1564,6 +1572,8 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       current_price_currency: form.current_price_currency || defaultCurrentPriceCurrency(form.asset_type),
       use_manual_value: form.asset_type === "cash"
         ? true
+        : form.asset_type === "thai_gold"
+        ? false
         : isManualUnitAsset(form.asset_type)
         ? true
         : !!form.use_manual_value,
@@ -1666,6 +1676,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
               onChange={(e) => set("ticker", e.target.value.toUpperCase())}
               placeholder={
                 form.asset_type === "bitcoin" ? "BTC" :
+                form.asset_type === "thai_gold" ? "THAI-GOLD" :
                 form.asset_type === "thai_stock" ? "Example: PTT.BK or PTT" :
                 form.asset_type === "mutual_fund" ? "Example: SCBS&P500" :
                 "Example: AAPL, VOO, ETH"
