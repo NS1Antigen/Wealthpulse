@@ -262,7 +262,7 @@ function getCurrentPriceLabel(type) {
   if (type === "thai_stock") return "Current Price Per Share (THB)";
   if (type === "mutual_fund") return "Current NAV / Price Per Unit (THB)";
   if (type === "international_stock") return "Current Price Per Share / ETF Unit";
-  if (type === "cash") return "Cash / Saving Amount";
+  if (type === "cash") return "Cash Deposit Amount";
   return "Manual Current Total Value (THB)";
 }
 
@@ -398,6 +398,7 @@ function convertThb(valueThb, usdToThb, currency) {
 }
 
 const ASSET_VALUE_SNAPSHOT_KEY = "wp_asset_value_snapshot_v1";
+const ASSET_DAILY_BASELINE_KEY = "wp_asset_daily_baseline_v2";
 const ASSET_DELTA_KEY = "wp_asset_delta_latest_v1";
 
 function safeLoadJson(key, fallback) {
@@ -421,15 +422,66 @@ function makeAssetSnapshotKey(asset) {
   return String(asset?.id || `${asset?.asset_type || "asset"}-${asset?.ticker || asset?.name || ""}`);
 }
 
+
+function getLocalDateKey(date = new Date()) {
+  return date.toLocaleDateString("en-CA");
+}
+
+function isManualPriceAsset(type) {
+  return ["thai_stock", "international_stock", "mutual_fund", "property", "land", "other"].includes(type);
+}
+
+function getManualPriceSignature(asset) {
+  return [
+    asset?.asset_type || "",
+    asset?.ticker || "",
+    Number(asset?.quantity) || 0,
+    Number(asset?.manual_value_thb) || 0,
+    Number(asset?.manual_ivv_close_price) || 0,
+    asset?.current_price_currency || "",
+    asset?.manual_price_updated_at || ""
+  ].join("|");
+}
+
+function getPriceTimestamp(asset, priceData) {
+  return (
+    asset?.manual_price_updated_at ||
+    asset?.ivv_last_updated ||
+    priceData?.updatedAt ||
+    priceData?.timestamp ||
+    priceData?.sourceDate ||
+    null
+  );
+}
+
+function getStaleWarning(asset, priceData) {
+  const timestamp = getPriceTimestamp(asset, priceData);
+  const isManual = isManualPriceAsset(asset?.asset_type) || asset?.use_manual_value;
+
+  if (!isManual || !timestamp) return null;
+
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+
+  const ageHours = ageMs / 36e5;
+  if (ageHours >= 72) return `Manual price may be stale: ${Math.floor(ageHours / 24)} days old`;
+  if (ageHours >= 24) return `Manual price may be stale: ${Math.floor(ageHours)} hours old`;
+  return null;
+}
+
 function loadLatestAssetDeltas() {
   const saved = safeLoadJson(ASSET_DELTA_KEY, { items: [] });
   return Array.isArray(saved?.items) ? saved.items : [];
 }
 
 function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
-  const previousSnapshot = safeLoadJson(ASSET_VALUE_SNAPSHOT_KEY, {});
-  const nextSnapshot = {};
-  const now = new Date().toISOString();
+  const legacyPreviousSnapshot = safeLoadJson(ASSET_VALUE_SNAPSHOT_KEY, {});
+  const savedBaseline = safeLoadJson(ASSET_DAILY_BASELINE_KEY, { dateKey: null, items: {} });
+  const previousItems = savedBaseline?.items || {};
+  const nextItems = { ...previousItems };
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const todayKey = getLocalDateKey(now);
 
   const items = (assetsWithCurrentValues || []).map((asset) => {
     const key = makeAssetSnapshotKey(asset);
@@ -440,12 +492,31 @@ function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
         ? currentValueThb / quantity
         : 0;
 
-    const previous = previousSnapshot?.[key] || null;
-    const previousValueThb = Number.isFinite(Number(previous?.valueThb))
-      ? Number(previous.valueThb)
+    const existingDaily = previousItems?.[key] || null;
+    const legacyPrevious = legacyPreviousSnapshot?.[key] || null;
+    const isManual = isManualPriceAsset(asset.asset_type) || asset.use_manual_value;
+    const manualSignature = getManualPriceSignature(asset);
+
+    let baseline = existingDaily;
+
+    if (!baseline) {
+      baseline = legacyPrevious
+        ? {
+            valueThb: Number(legacyPrevious.valueThb) || currentValueThb,
+            unitPriceThb: Number(legacyPrevious.unitPriceThb) || currentUnitPriceThb,
+            quantity: Number(legacyPrevious.quantity) || quantity,
+            dateKey: legacyPrevious.dateKey || todayKey,
+            savedAt: legacyPrevious.savedAt || nowIso,
+            manualSignature
+          }
+        : null;
+    }
+
+    const previousValueThb = Number.isFinite(Number(baseline?.valueThb))
+      ? Number(baseline.valueThb)
       : null;
-    const previousUnitPriceThb = Number.isFinite(Number(previous?.unitPriceThb))
-      ? Number(previous.unitPriceThb)
+    const previousUnitPriceThb = Number.isFinite(Number(baseline?.unitPriceThb))
+      ? Number(baseline.unitPriceThb)
       : null;
 
     const changeThb = previousValueThb === null ? 0 : currentValueThb - previousValueThb;
@@ -456,16 +527,27 @@ function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
         ? (changeThb / previousValueThb) * 100
         : 0;
 
-    nextSnapshot[key] = {
-      id: asset.id,
-      name: asset.name,
-      ticker: asset.ticker,
-      asset_type: asset.asset_type,
-      valueThb: currentValueThb,
-      unitPriceThb: currentUnitPriceThb,
-      quantity,
-      savedAt: now
-    };
+    // Predictable refresh behavior:
+    // - Auto assets reset the daily baseline only once per calendar day.
+    // - Manual assets do NOT reset just because you press Refresh; they reset only after you enter a new manual price/NAV.
+    const shouldResetAutoDailyBaseline = !isManual && (!baseline || baseline.dateKey !== todayKey);
+    const shouldAdvanceManualBaseline =
+      isManual && (!baseline || baseline.manualSignature !== manualSignature);
+
+    if (!baseline || shouldResetAutoDailyBaseline || shouldAdvanceManualBaseline) {
+      nextItems[key] = {
+        id: asset.id,
+        name: asset.name,
+        ticker: asset.ticker,
+        asset_type: asset.asset_type,
+        valueThb: currentValueThb,
+        unitPriceThb: currentUnitPriceThb,
+        quantity,
+        dateKey: todayKey,
+        savedAt: nowIso,
+        manualSignature
+      };
+    }
 
     return {
       key,
@@ -481,12 +563,29 @@ function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
       currentUnitPriceThb,
       previousUnitPriceThb,
       unitChangeThb,
-      isNew: previousValueThb === null
+      isNew: previousValueThb === null,
+      baselineLabel: isManual ? "Since previous entered price" : "Today",
+      baselineSavedAt: baseline?.savedAt || null
     };
   });
 
-  safeSaveJson(ASSET_VALUE_SNAPSHOT_KEY, nextSnapshot);
-  safeSaveJson(ASSET_DELTA_KEY, { timestamp: now, items });
+  const legacySnapshot = {};
+  items.forEach((item) => {
+    legacySnapshot[item.key] = {
+      id: item.id,
+      name: item.name,
+      ticker: item.ticker,
+      asset_type: item.asset_type,
+      valueThb: item.currentValueThb,
+      unitPriceThb: item.currentUnitPriceThb,
+      quantity: item.quantity,
+      savedAt: nowIso
+    };
+  });
+
+  safeSaveJson(ASSET_VALUE_SNAPSHOT_KEY, legacySnapshot);
+  safeSaveJson(ASSET_DAILY_BASELINE_KEY, { dateKey: todayKey, updatedAt: nowIso, items: nextItems });
+  safeSaveJson(ASSET_DELTA_KEY, { timestamp: nowIso, items });
   return items;
 }
 
@@ -587,6 +686,8 @@ function App() {
       const costValueThb = getAssetCostValueThb(a, usdToThb);
       return {
         ...a,
+        currentValueThb,
+        costValueThb,
         currentValue: convertThb(currentValueThb, usdToThb, currency),
         costValue: convertThb(costValueThb, usdToThb, currency)
       };
@@ -883,6 +984,15 @@ function Dashboard(props) {
     removeAsset
   } = props;
 
+  const assetDeltaMap = useMemo(() => {
+    const map = {};
+    (Array.isArray(assetDeltas) ? assetDeltas : []).forEach((item) => {
+      map[item.key] = item;
+      if (item.id) map[String(item.id)] = item;
+    });
+    return map;
+  }, [assetDeltas]);
+
   return (
     <div className="stack">
       <motion.section className="heroCard" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
@@ -939,6 +1049,8 @@ function Dashboard(props) {
                 key={asset.id}
                 asset={asset}
                 priceData={prices[asset.ticker]}
+                deltaData={assetDeltaMap[makeAssetSnapshotKey(asset)] || assetDeltaMap[String(asset.id)]}
+                usdToThb={usdToThb}
                 currency={currency}
                 hidden={hidden}
                 onEdit={editAsset}
@@ -1141,11 +1253,14 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     value: currency === "THB" ? t.totalThb : t.totalUsd
   }));
 
-  const latest = data[data.length - 1]?.value || 0;
-  const first = data[0]?.value || 0;
-  const change = latest - first;
-  const changePct = first > 0 ? (change / first) * 100 : 0;
   const safeUsdToThb = Number(usdToThb) || 1;
+  const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
+  const totalCurrentThb = cleanItems.reduce((sum, item) => sum + (Number(item.currentValueThb) || 0), 0);
+  const totalChangeThb = cleanItems.reduce((sum, item) => sum + (Number(item.changeThb) || 0), 0);
+  const change = currency === "USD" ? totalChangeThb / safeUsdToThb : totalChangeThb;
+  const changePct = totalCurrentThb - totalChangeThb > 0
+    ? (totalChangeThb / (totalCurrentThb - totalChangeThb)) * 100
+    : 0;
 
   function fromThb(valueThb) {
     return currency === "USD" ? valueThb / safeUsdToThb : valueThb;
@@ -1160,7 +1275,6 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     return `${n >= 0 ? "+" : ""}${moneyFromThb(n)}`;
   }
 
-  const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
   const grouped = cleanItems.reduce((acc, item) => {
     const type = item.asset_type || "other";
 
@@ -1184,6 +1298,12 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     (a, b) => Math.abs(b.changeThb) - Math.abs(a.changeThb)
   );
 
+  const biggestMovers = cleanItems
+    .filter((item) => !item.isNew && Math.abs(Number(item.changeThb) || 0) > 0)
+    .slice()
+    .sort((a, b) => Math.abs(Number(b.changeThb) || 0) - Math.abs(Number(a.changeThb) || 0))
+    .slice(0, 3);
+
   function toggleGroup(type) {
     setExpandedTypes((old) => ({
       ...old,
@@ -1197,7 +1317,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         <div>
           <h2>Net Worth Timeline</h2>
           <p className="muted small" style={{ marginBottom: 0 }}>
-            Saved from each Refresh snapshot
+            Chart saves each Refresh; movement uses a stable baseline
           </p>
         </div>
         {data.length >= 2 && !hidden && (
@@ -1211,7 +1331,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
             </div>
             <div className="muted small">
-              {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap details
+              Today / latest manual update: {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap details
             </div>
           </button>
         )}
@@ -1275,6 +1395,28 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         </div>
       )}
 
+      {!hidden && biggestMovers.length > 0 && (
+        <div className="stat" style={{ marginTop: 12, borderRadius: 16 }}>
+          <div className="row" style={{ alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontWeight: 850 }}>Portfolio movement breakdown</div>
+              <div className="muted small">Same baseline system as the detail panel</div>
+            </div>
+            <button type="button" className="ghost" onClick={() => setDetailOpen(true)}>View all</button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {biggestMovers.map((item) => (
+              <div key={item.key} className="legendRow">
+                <span>{item.name}</span>
+                <b className={item.changeThb >= 0 ? "green" : "red"}>
+                  {signedMoneyFromThb(item.changeThb)}
+                </b>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {detailOpen && (
         <div
           className="modalBg"
@@ -1296,7 +1438,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               <div>
                 <h2>What changed?</h2>
                 <p className="muted small" style={{ marginTop: 4 }}>
-                  Compared with the previous stored asset value. New assets show +0 first.
+                  Uses one clear system: auto assets compare with today’s baseline; manual assets compare after you enter a new price/NAV. New assets show +0 first.
                 </p>
               </div>
               <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>
@@ -1429,7 +1571,7 @@ function recalculateAssetFromTransactions(asset, transactions) {
   };
 }
 
-function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portfolioTotal }) {
+function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, onEdit, onDelete, portfolioTotal }) {
   const Icon = TYPE_ICONS[asset.asset_type] || Wallet;
   const [showTx, setShowTx] = useState(false);
   const allocationPct = portfolioTotal > 0
@@ -1440,6 +1582,14 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portf
     asset.asset_type !== "cash" && Number(asset.costValue) > 0
       ? (pnl / Number(asset.costValue)) * 100
       : null;
+  const safeUsdToThb = Number(usdToThb) || 1;
+  const todayChangeThb = Number(deltaData?.changeThb) || 0;
+  const todayChangeValue = currency === "USD" ? todayChangeThb / safeUsdToThb : todayChangeThb;
+  const todayChangePct = Number(deltaData?.changePct) || 0;
+  const hasTodayChange = !!deltaData && !deltaData.isNew;
+  const priceTimestamp = getPriceTimestamp(asset, priceData);
+  const staleWarning = getStaleWarning(asset, priceData);
+  const movementLabel = deltaData?.baselineLabel || (isManualPriceAsset(asset.asset_type) ? "Since previous entered price" : "Today");
 
   function deleteTransaction(txId) {
     if (!confirm("Delete this transaction?")) return;
@@ -1521,18 +1671,29 @@ function AssetItem({ asset, priceData, currency, hidden, onEdit, onDelete, portf
 
       <div className="assetValue">
         <b>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
+
         {pnlPct !== null && !hidden && (
           <span className={pnl >= 0 ? "green" : "red"}>
-            {pnl >= 0 ? "+" : ""}
-            {pnlPct.toFixed(2)}%
+            Since buy: {pnl >= 0 ? "+" : ""}
+            {formatCurrency(pnl, currency)} ({pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
           </span>
         )}
-        {asset.asset_type !== "cash" && priceData?.change_24h_percent ? (
-          <span className={priceData.change_24h_percent >= 0 ? "green" : "red"}>
-            {priceData.change_24h_percent >= 0 ? "+" : ""}
-            {priceData.change_24h_percent.toFixed(2)}%
+
+        {!hidden && (
+          <span className={todayChangeThb >= 0 ? "green" : "red"}>
+            {movementLabel}: {hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${formatCurrency(todayChangeValue, currency)} (${todayChangeThb >= 0 ? "+" : ""}${todayChangePct.toFixed(2)}%)` : "new baseline"}
           </span>
-        ) : null}
+        )}
+
+        {priceTimestamp && (
+          <span className="muted small">
+            Price updated: {new Date(priceTimestamp).toLocaleString()}
+          </span>
+        )}
+
+        {staleWarning && (
+          <span className="red small">{staleWarning}</span>
+        )}
       </div>
 
       <div className="miniActions">
