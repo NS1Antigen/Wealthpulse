@@ -620,6 +620,7 @@ function App() {
             loading={loading}
             lastUpdated={lastUpdated}
             timeline={timeline}
+            assetDeltas={assetDeltas}
             usdToThb={usdToThb}
             fxSource={fxSource}
             fxSourceDate={fxSourceDate}
@@ -873,6 +874,7 @@ function Dashboard(props) {
     loading,
     lastUpdated,
     timeline,
+    assetDeltas,
     usdToThb,
     fxSource,
     fxSourceDate,
