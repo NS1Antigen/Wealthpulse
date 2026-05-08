@@ -564,7 +564,7 @@ function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
       previousUnitPriceThb,
       unitChangeThb,
       isNew: previousValueThb === null,
-      baselineLabel: isManual ? "Since previous entered price" : "Today",
+      baselineLabel: "Today",
       baselineSavedAt: baseline?.savedAt || null
     };
   });
@@ -1590,7 +1590,7 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
   const hasTodayChange = !!deltaData && !deltaData.isNew;
   const priceTimestamp = getPriceTimestamp(asset, priceData);
   const staleWarning = getStaleWarning(asset, priceData);
-  const movementLabel = deltaData?.baselineLabel || (isManualPriceAsset(asset.asset_type) ? "Prev price" : "Today");
+  const movementLabel = "Today";
   const compactTimestamp = priceTimestamp
     ? new Date(priceTimestamp).toLocaleString(undefined, {
         month: "short",
@@ -1657,15 +1657,15 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
           percentText: hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${todayChangePct.toFixed(2)}%` : "new",
           moneyText: hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${formatCurrency(todayChangeValue, currency)}` : "New baseline",
           explain: isManualPriceAsset(asset.asset_type)
-            ? "Compared with the previous manual price you entered. Refresh alone does not reset this manual baseline."
-            : "Compared with today's saved baseline. Refresh updates prices, but it does not keep resetting the daily baseline during the same day.",
+            ? "Today change for manual assets is based on your latest entered price compared with the previous entered price. Refresh alone does not reset it."
+            : "Today change is compared with today's saved baseline. Refresh updates prices, but it does not keep resetting the daily baseline during the same day.",
           extra: compactTimestamp ? `Price updated: ${compactTimestamp}` : "No update timestamp saved"
         }
       : null;
 
   return (
     <>
-      <div className="assetItem">
+      <div className="assetItem" style={{ alignItems: "flex-start", overflow: "visible" }}>
         <div className="assetIcon"><Icon size={19} /></div>
 
         <div className="assetMain" style={{ minWidth: 0 }}>
@@ -1695,37 +1695,10 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
             </button>
           )}
 
-          {showTx && (
-            <div className="txList">
-              {asset.transactions.map((tx) => (
-                <div className="txRow" key={tx.id}>
-                  <span>
-                    {asset.asset_type === "cash" ? (
-                      <>
-                        {new Date(tx.date).toLocaleDateString()} · Deposit ·{" "}
-                        {Number((tx.amount ?? tx.quantity) || 0).toLocaleString()} {tx.currency || "THB"}
-                        {tx.note ? ` · ${tx.note}` : ""}
-                      </>
-                    ) : (
-                      <>
-                        {new Date(tx.date).toLocaleDateString()} · {tx.quantity} units ·{" "}
-                        {tx.price_per_unit
-                          ? `${tx.price_per_unit} ${tx.currency}`
-                          : "cost unknown"}
-                      </>
-                    )}
-                  </span>
-                  <button className="ghost danger" onClick={() => deleteTransaction(tx.id)}>
-                    Delete
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
-        <div className="assetValue" style={{ minWidth: 118, maxWidth: 150 }}>
-          <b style={{ whiteSpace: "nowrap" }}>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
+        <div className="assetValue" style={{ minWidth: 104, maxWidth: 132, overflow: "visible" }}>
+          <b style={{ whiteSpace: "nowrap", display: "block", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
 
           {!hidden && (
             <div
@@ -1745,11 +1718,13 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
                   onClick={() => openMetric("buy")}
                   style={{
                     ...chipBaseStyle,
-                    color: "inherit"
+                    color: pnl >= 0 ? "#16a34a" : "#dc2626",
+                    borderColor: pnl >= 0 ? "rgba(22,163,74,0.35)" : "rgba(220,38,38,0.35)",
+                    background: pnl >= 0 ? "rgba(22,163,74,0.10)" : "rgba(220,38,38,0.10)"
                   }}
                   title="Tap for exact since-buy profit/loss"
                 >
-                  Buy {pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
+                  Since Buy {pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
                 </button>
               )}
 
@@ -1759,11 +1734,13 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
                 onClick={() => openMetric("today")}
                 style={{
                   ...chipBaseStyle,
-                  color: "inherit"
+                  color: todayChangeThb >= 0 ? "#16a34a" : "#dc2626",
+                  borderColor: todayChangeThb >= 0 ? "rgba(22,163,74,0.35)" : "rgba(220,38,38,0.35)",
+                  background: todayChangeThb >= 0 ? "rgba(22,163,74,0.10)" : "rgba(220,38,38,0.10)"
                 }}
-                title="Tap for exact daily/previous-price movement"
+                title="Tap for exact daily movement"
               >
-                {movementLabel} {hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${todayChangePct.toFixed(2)}%` : "new"}
+                Today {hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${todayChangePct.toFixed(2)}%` : "new"}
               </button>
             </div>
           )}
@@ -1774,6 +1751,58 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
           <button className="ghost danger" onClick={() => onDelete(asset.id)}><Trash2 size={15} /></button>
         </div>
       </div>
+
+      {showTx && (
+        <div
+          className="txList"
+          style={{
+            width: "100%",
+            maxWidth: "100%",
+            overflowX: "auto",
+            boxSizing: "border-box",
+            marginTop: 8,
+            padding: 10,
+            borderRadius: 14,
+            border: "1px solid var(--border)",
+            background: "color-mix(in srgb, var(--card) 92%, var(--muted) 4%)"
+          }}
+        >
+          {asset.transactions.map((tx) => (
+            <div
+              className="txRow"
+              key={tx.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) auto",
+                gap: 8,
+                alignItems: "center",
+                width: "100%",
+                boxSizing: "border-box"
+              }}
+            >
+              <span style={{ minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }}>
+                {asset.asset_type === "cash" ? (
+                  <>
+                    {new Date(tx.date).toLocaleDateString()} · Deposit ·{" "}
+                    {Number((tx.amount ?? tx.quantity) || 0).toLocaleString()} {tx.currency || "THB"}
+                    {tx.note ? ` · ${tx.note}` : ""}
+                  </>
+                ) : (
+                  <>
+                    {new Date(tx.date).toLocaleDateString()} · {tx.quantity} units ·{" "}
+                    {tx.price_per_unit
+                      ? `${tx.price_per_unit} ${tx.currency}`
+                      : "cost unknown"}
+                  </>
+                )}
+              </span>
+              <button className="ghost danger" onClick={() => deleteTransaction(tx.id)} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {detail && (
         <div className="modalBg" onClick={() => setDetailMetric(null)}>
