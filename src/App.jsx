@@ -397,6 +397,115 @@ function convertThb(valueThb, usdToThb, currency) {
   return currency === "USD" ? valueThb / usdToThb : valueThb;
 }
 
+const ASSET_VALUE_SNAPSHOT_KEY = "wp_asset_value_snapshot_v1";
+const ASSET_DELTA_KEY = "wp_asset_delta_latest_v1";
+
+function loadJsonLocal(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJsonLocal(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.warn("Local snapshot save failed", key, err);
+  }
+}
+
+function assetSnapshotKey(asset) {
+  return String(asset.id || `${asset.asset_type}-${asset.ticker || asset.name}`);
+}
+
+function loadLatestAssetDeltas() {
+  const saved = loadJsonLocal(ASSET_DELTA_KEY, null);
+  return Array.isArray(saved?.items) ? saved.items : [];
+}
+
+function getAssetUnitPriceThb(asset, currentValueThb) {
+  const qty = safeNumber(asset.quantity);
+  if (!qty || asset.asset_type === "cash") return 0;
+  return currentValueThb / qty;
+}
+
+function buildAssetDeltaItems(assetsWithCurrentValues) {
+  const previousSnapshot = loadJsonLocal(ASSET_VALUE_SNAPSHOT_KEY, {});
+  const nowSnapshot = {};
+  const items = assetsWithCurrentValues.map((asset) => {
+    const key = assetSnapshotKey(asset);
+    const currentValueThb = safeNumber(asset.currentValueThb);
+    const currentUnitPriceThb = getAssetUnitPriceThb(asset, currentValueThb);
+    const previous = previousSnapshot[key];
+
+    const previousValueThb = Number.isFinite(Number(previous?.valueThb))
+      ? Number(previous.valueThb)
+      : null;
+
+    const previousUnitPriceThb = Number.isFinite(Number(previous?.unitPriceThb))
+      ? Number(previous.unitPriceThb)
+      : null;
+
+    const changeThb =
+      previousValueThb === null
+        ? 0
+        : currentValueThb - previousValueThb;
+
+    const unitChangeThb =
+      previousUnitPriceThb === null
+        ? 0
+        : currentUnitPriceThb - previousUnitPriceThb;
+
+    const changePct =
+      previousValueThb && previousValueThb > 0
+        ? (changeThb / previousValueThb) * 100
+        : 0;
+
+    nowSnapshot[key] = {
+      id: asset.id,
+      name: asset.name,
+      ticker: asset.ticker,
+      asset_type: asset.asset_type,
+      valueThb: currentValueThb,
+      unitPriceThb: currentUnitPriceThb,
+      quantity: safeNumber(asset.quantity),
+      savedAt: new Date().toISOString()
+    };
+
+    return {
+      id: asset.id,
+      key,
+      name: asset.name || asset.ticker || "Unnamed asset",
+      ticker: asset.ticker || "",
+      asset_type: asset.asset_type,
+      quantity: safeNumber(asset.quantity),
+      currentValueThb,
+      previousValueThb,
+      changeThb,
+      changePct,
+      currentUnitPriceThb,
+      previousUnitPriceThb,
+      unitChangeThb,
+      isNew: previousValueThb === null
+    };
+  });
+
+  saveJsonLocal(ASSET_VALUE_SNAPSHOT_KEY, nowSnapshot);
+  saveJsonLocal(ASSET_DELTA_KEY, {
+    timestamp: new Date().toISOString(),
+    items
+  });
+
+  return items;
+}
+
+function typeDisplayName(type) {
+  return TYPE_LABELS[type] || type;
+}
+
 function App() {
   const [theme, setTheme] = useState(getTheme());
   const [page, setPage] = useState("dashboard");
@@ -411,6 +520,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [modalAsset, setModalAsset] = useState(null);
   const [timeline, setTimeline] = useState(getTimeline());
+  const [assetDeltas, setAssetDeltas] = useState(loadLatestAssetDeltas());
   const [unlocked, setUnlocked] = useState(!hasPinSet());
 
   useEffect(() => {
@@ -445,33 +555,17 @@ function App() {
 
       const withValues = currentAssets.map((a) => ({
         ...a,
-        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb),
-        costValueThb: getAssetCostValueThb(a, finalUsdToThb)
+        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb)
       }));
+
+      const latestAssetDeltas = buildAssetDeltaItems(withValues);
+      setAssetDeltas(latestAssetDeltas);
 
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
       const breakdown = {};
       withValues.forEach((a) => {
         breakdown[a.asset_type] = (breakdown[a.asset_type] || 0) + a.currentValueThb;
       });
-
-      // Store extra details inside the timeline snapshot so the Net Worth Timeline
-      // can explain what made the portfolio change after each refresh.
-      breakdown.__assetDetails = withValues
-        .map((a) => ({
-          id: a.id,
-          name: a.name || "Unnamed asset",
-          ticker: a.ticker || "",
-          asset_type: a.asset_type,
-          quantity: Number(a.quantity) || 0,
-          currentValueThb: Number(a.currentValueThb) || 0,
-          costValueThb: Number(a.costValueThb) || 0,
-          price: Number(finalPrices?.[a.ticker]?.price) || Number(a.manual_value_thb) || 0,
-          priceCurrency: finalPrices?.[a.ticker]?.currency || a.current_price_currency || "THB",
-          source: finalPrices?.[a.ticker]?.source || "Manual / saved"
-        }))
-        .sort((a, b) => b.currentValueThb - a.currentValueThb);
-      breakdown.__assetCount = breakdown.__assetDetails.length;
 
       addTimelineEntry(totalThb, totalThb / finalUsdToThb, breakdown);
       setTimeline(getTimeline());
@@ -818,7 +912,7 @@ function Dashboard(props) {
         <Analytics assets={assets} currency={currency} hidden={hidden} />
       </div>
 
-      <NetWorthChart timeline={timeline} currency={currency} hidden={hidden} />
+      <NetWorthChart timeline={timeline} currency={currency} hidden={hidden} assetDeltas={assetDeltas} usdToThb={usdToThb} />
 
       <section className="card">
         <div className="row">
@@ -1025,80 +1119,9 @@ function Stat({ label, value, sub, good, warn }) {
   );
 }
 
-function NetWorthChart({ timeline, currency, hidden }) {
+function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb }) {
   const [detailOpen, setDetailOpen] = useState(false);
-  const [expandedType, setExpandedType] = useState(null);
-
-  function getSnapshotValue(entry) {
-    if (!entry) return 0;
-    return currency === "THB"
-      ? Number(entry.totalThb) || 0
-      : Number(entry.totalUsd) || 0;
-  }
-
-  function getFxFromSnapshot(entry) {
-    const thb = Number(entry?.totalThb) || 0;
-    const usd = Number(entry?.totalUsd) || 0;
-    return thb > 0 && usd > 0 ? thb / usd : 1;
-  }
-
-  function convertSnapshotThb(valueThb, entry) {
-    if (currency === "THB") return Number(valueThb) || 0;
-    const fx = getFxFromSnapshot(entry);
-    return fx > 0 ? (Number(valueThb) || 0) / fx : 0;
-  }
-
-  function entryDayKey(entry) {
-    if (!entry?.date) return "";
-    return new Date(entry.date).toLocaleDateString("en-CA");
-  }
-
-  function getReferenceEntry() {
-    if (timeline.length < 2) return null;
-
-    const latest = timeline[timeline.length - 1];
-    const latestDay = entryDayKey(latest);
-
-    // Prefer the newest snapshot from a previous calendar day.
-    // This prevents confusing tiny deltas when the user refreshes many times today.
-    for (let i = timeline.length - 2; i >= 0; i--) {
-      if (entryDayKey(timeline[i]) !== latestDay) return timeline[i];
-    }
-
-    // If there is no previous-day snapshot yet, use the immediately previous snapshot.
-    return timeline[timeline.length - 2] || null;
-  }
-
-  function getAssetKey(asset) {
-    return String(asset?.id || `${asset?.name || ""}-${asset?.ticker || ""}`);
-  }
-
-  function getAssetPrice(asset) {
-    const price = Number(asset?.price);
-    if (Number.isFinite(price) && price > 0) return price;
-
-    const qty = Number(asset?.quantity) || 0;
-    const valueThb = Number(asset?.currentValueThb) || 0;
-    const fx = getFxFromSnapshot(latestEntry);
-    const currencyOfPrice = asset?.priceCurrency || "THB";
-
-    if (qty > 0 && valueThb > 0) {
-      return currencyOfPrice === "USD" && fx > 0
-        ? valueThb / fx / qty
-        : valueThb / qty;
-    }
-
-    return 0;
-  }
-
-  function valueFromPriceThb(price, quantity, priceCurrency, fxEntry) {
-    const raw = (Number(price) || 0) * (Number(quantity) || 0);
-    if (priceCurrency === "USD") {
-      const fx = getFxFromSnapshot(fxEntry);
-      return raw * (fx || 1);
-    }
-    return raw;
-  }
+  const [expandedTypes, setExpandedTypes] = useState({});
 
   const data = timeline.map((t) => ({
     date: t.date,
@@ -1106,184 +1129,58 @@ function NetWorthChart({ timeline, currency, hidden }) {
       month: "short",
       day: "numeric"
     }),
-    value: getSnapshotValue(t),
-    raw: t
+    value: currency === "THB" ? t.totalThb : t.totalUsd
   }));
 
-  const latestEntry = timeline[timeline.length - 1] || null;
-  const referenceEntry = getReferenceEntry();
-  const firstEntry = timeline[0] || null;
+  const latest = data[data.length - 1]?.value || 0;
+  const first = data[0]?.value || 0;
+  const change = latest - first;
+  const changePct = first > 0 ? (change / first) * 100 : 0;
+  const safeUsdToThb = Number(usdToThb) || 1;
 
-  const latest = getSnapshotValue(latestEntry);
-  const referenceTotal = getSnapshotValue(referenceEntry);
-  const first = getSnapshotValue(firstEntry);
-
-  const totalChange = latest - referenceTotal;
-  const totalChangePct = referenceTotal > 0 ? (totalChange / referenceTotal) * 100 : 0;
-  const allTimeChange = latest - first;
-  const allTimeChangePct = first > 0 ? (allTimeChange / first) * 100 : 0;
-
-  const latestAssets = latestEntry?.breakdown?.__assetDetails || [];
-  const referenceAssets = referenceEntry?.breakdown?.__assetDetails || [];
-
-  const referenceAssetMap = new Map(
-    referenceAssets.map((a) => [getAssetKey(a), a])
-  );
-
-  const assetRows = latestAssets
-    .map((asset) => {
-      const key = getAssetKey(asset);
-      const previous = referenceAssetMap.get(key) || null;
-
-      const quantity = Number(asset.quantity) || 0;
-      const currentPrice = getAssetPrice(asset);
-      const previousPrice = previous ? getAssetPrice(previous) : currentPrice;
-      const priceCurrency = asset.priceCurrency || previous?.priceCurrency || "THB";
-
-      // For market/unit assets, compare current price with the previous stored/reference price,
-      // then apply the latest quantity. New assets without a previous price show +0 change.
-      let currentValueThb = Number(asset.currentValueThb) || 0;
-      let previousValueThb = previous
-        ? valueFromPriceThb(previousPrice, quantity, priceCurrency, latestEntry)
-        : currentValueThb;
-
-      // For value-only assets where price/quantity are not meaningful, compare total saved value.
-      const unitTracked = quantity > 0 && currentPrice > 0;
-      if (!unitTracked) {
-        previousValueThb = previous
-          ? Number(previous.currentValueThb) || 0
-          : currentValueThb;
-      }
-
-      const deltaThb = currentValueThb - previousValueThb;
-      const currentDisplay = convertSnapshotThb(currentValueThb, latestEntry);
-      const previousDisplay = convertSnapshotThb(previousValueThb, latestEntry);
-      const deltaDisplay = convertSnapshotThb(deltaThb, latestEntry);
-
-      const priceDelta = currentPrice - previousPrice;
-      const priceDeltaPct = previousPrice > 0 ? (priceDelta / previousPrice) * 100 : 0;
-
-      return {
-        ...asset,
-        id: asset.id || key,
-        name: asset.name || "Unnamed asset",
-        ticker: asset.ticker || "",
-        asset_type: asset.asset_type || "other",
-        source: asset.source || "Manual / saved",
-        quantity,
-        priceCurrency,
-        currentPrice,
-        previousPrice,
-        priceDelta,
-        priceDeltaPct,
-        current: currentDisplay,
-        previous: previousDisplay,
-        delta: deltaDisplay,
-        isNew: !previous
-      };
-    })
-    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0 || Math.abs(row.delta) > 0)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-
-  const typeRows = Array.from(new Set(assetRows.map((a) => a.asset_type)))
-    .map((type) => {
-      const assetsInType = assetRows.filter((a) => a.asset_type === type);
-      const current = assetsInType.reduce((sum, a) => sum + (Number(a.current) || 0), 0);
-      const previous = assetsInType.reduce((sum, a) => sum + (Number(a.previous) || 0), 0);
-      const delta = assetsInType.reduce((sum, a) => sum + (Number(a.delta) || 0), 0);
-
-      return {
-        type,
-        label: TYPE_LABELS[type] || type,
-        current,
-        previous,
-        delta,
-        assets: assetsInType
-      };
-    })
-    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0 || Math.abs(row.delta) > 0)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-
-  function PriceLine({ asset }) {
-    if (!asset.currentPrice) return null;
-
-    const sign = asset.priceDelta >= 0 ? "+" : "";
-    const currencyLabel = asset.priceCurrency || "THB";
-
-    return (
-      <div className="muted small" style={{ marginTop: 4 }}>
-        Price: {Number(asset.currentPrice).toLocaleString(undefined, { maximumFractionDigits: 4 })} {currencyLabel}
-        {asset.previousPrice > 0 && (
-          <>
-            {" · Prev: "}
-            {Number(asset.previousPrice).toLocaleString(undefined, { maximumFractionDigits: 4 })}
-            {" · "}
-            <span className={asset.priceDelta >= 0 ? "green" : "red"}>
-              {sign}{asset.priceDelta.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-              {asset.previousPrice > 0 ? ` (${sign}${asset.priceDeltaPct.toFixed(2)}%)` : ""}
-            </span>
-          </>
-        )}
-      </div>
-    );
+  function displayThb(valueThb) {
+    const value = currency === "USD" ? valueThb / safeUsdToThb : valueThb;
+    return formatCurrency(value, currency);
   }
 
-  function RowCard({ label, sub, current, previous, delta, onClick, expanded, count, asset }) {
-    const positive = delta >= 0;
-    const clickable = typeof onClick === "function";
+  function signedDisplayThb(valueThb) {
+    const sign = valueThb >= 0 ? "+" : "";
+    return `${sign}${displayThb(valueThb)}`;
+  }
 
-    const body = (
-      <>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {label}
-            </div>
-            {sub && <div className="muted small" style={{ marginTop: 3 }}>{sub}</div>}
-            {asset && <PriceLine asset={asset} />}
-            {asset?.isNew && (
-              <div className="muted small" style={{ marginTop: 4 }}>
-                New/no previous reference price → change shown as +0
-              </div>
-            )}
-            {count > 0 && (
-              <div className="muted small" style={{ marginTop: 4 }}>
-                {expanded ? "Tap to collapse" : `Tap to view ${count} asset${count === 1 ? "" : "s"}`}
-              </div>
-            )}
-          </div>
+  const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
 
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div className={positive ? "green statValue" : "red statValue"} style={{ fontSize: 16 }}>
-              {positive ? "+" : ""}{formatCurrency(delta, currency)}
-            </div>
-            <div className="muted small">Now {formatCurrency(current, currency)}</div>
-            {previous > 0 && <div className="muted small">Ref {formatCurrency(previous, currency)}</div>}
-          </div>
-        </div>
-      </>
-    );
+  const sortedItems = [...cleanItems].sort(
+    (a, b) => Math.abs(Number(b.changeThb) || 0) - Math.abs(Number(a.changeThb) || 0)
+  );
 
-    const style = {
-      width: "100%",
-      textAlign: "left",
-      padding: 14,
-      borderRadius: 18,
-      border: "1px solid var(--border)",
-      background: "var(--card)",
-      marginBottom: 10,
-      display: "block"
-    };
-
-    if (clickable) {
-      return (
-        <button type="button" className="ghost" onClick={onClick} style={style}>
-          {body}
-        </button>
-      );
+  const grouped = sortedItems.reduce((acc, item) => {
+    const type = item.asset_type || "other";
+    if (!acc[type]) {
+      acc[type] = {
+        type,
+        name: typeDisplayName(type),
+        currentValueThb: 0,
+        changeThb: 0,
+        items: []
+      };
     }
 
-    return <div style={style}>{body}</div>;
+    acc[type].currentValueThb += Number(item.currentValueThb) || 0;
+    acc[type].changeThb += Number(item.changeThb) || 0;
+    acc[type].items.push(item);
+    return acc;
+  }, {});
+
+  const groupedList = Object.values(grouped).sort(
+    (a, b) => Math.abs(b.changeThb) - Math.abs(a.changeThb)
+  );
+
+  function toggleType(type) {
+    setExpandedTypes((old) => ({
+      ...old,
+      [type]: !old[type]
+    }));
   }
 
   return (
@@ -1300,14 +1197,13 @@ function NetWorthChart({ timeline, currency, hidden }) {
             type="button"
             className="ghost"
             onClick={() => setDetailOpen(true)}
-            style={{ textAlign: "right", padding: 8, borderRadius: 14 }}
-            title="Tap to see what changed vs the previous reference snapshot"
+            style={{ textAlign: "right", padding: 8 }}
           >
-            <div className={totalChange >= 0 ? "green statValue" : "red statValue"}>
-              {totalChange >= 0 ? "+" : ""}{formatCurrency(totalChange, currency)}
+            <div className={change >= 0 ? "green statValue" : "red statValue"}>
+              {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
             </div>
             <div className="muted small">
-              {referenceEntry ? `vs ${new Date(referenceEntry.date).toLocaleDateString()}` : "tap for details"}
+              {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap details
             </div>
           </button>
         )}
@@ -1316,176 +1212,190 @@ function NetWorthChart({ timeline, currency, hidden }) {
       {data.length < 2 ? (
         <p className="muted chartEmpty">Refresh prices on different days to build your timeline.</p>
       ) : (
-        <>
-          <div className="areaBox">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.32} />
-                    <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" opacity={0.55} />
-                <XAxis
-                  dataKey="displayDate"
-                  tick={{ fill: "var(--muted)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  hide={hidden}
-                  tick={{ fill: "var(--muted)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={72}
-                  tickFormatter={(v) => {
-                    if (hidden) return "";
-                    if (Math.abs(v) >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
-                    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}K`;
-                    return v;
-                  }}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "var(--card)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 14,
-                    boxShadow: "var(--shadow)",
-                    color: "var(--text)"
-                  }}
-                  labelStyle={{ color: "var(--muted)", fontSize: 12 }}
-                  formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
-                  labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  stroke="var(--primary)"
-                  strokeWidth={3}
-                  fill="url(#wealthGradient)"
-                  dot={{ r: 3, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)" }}
-                  activeDot={{ r: 6, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)" }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => setDetailOpen(true)}
-            style={{ marginTop: 10, width: "100%", textAlign: "left", padding: 10, borderRadius: 14 }}
-          >
-            <div className="muted small">Reference change</div>
-            <div className={totalChange >= 0 ? "green statValue" : "red statValue"}>
-              {totalChange >= 0 ? "+" : ""}{formatCurrency(totalChange, currency)}
-              {referenceTotal > 0 ? ` (${totalChange >= 0 ? "+" : ""}${totalChangePct.toFixed(2)}%)` : ""}
-            </div>
-            <div className="muted small">
-              Compared with {referenceEntry?.date ? new Date(referenceEntry.date).toLocaleString() : "previous snapshot"}
-            </div>
-          </button>
-        </>
+        <div className="areaBox">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.32} />
+                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" opacity={0.55} />
+              <XAxis
+                dataKey="displayDate"
+                tick={{ fill: "var(--muted)", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                hide={hidden}
+                tick={{ fill: "var(--muted)", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                width={72}
+                tickFormatter={(v) => {
+                  if (hidden) return "";
+                  if (Math.abs(v) >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+                  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}K`;
+                  return v;
+                }}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "var(--card)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 14,
+                  boxShadow: "var(--shadow)",
+                  color: "var(--text)"
+                }}
+                labelStyle={{ color: "var(--muted)", fontSize: 12 }}
+                formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
+                labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+              />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke="var(--primary)"
+                strokeWidth={3}
+                fill="url(#wealthGradient)"
+                dot={{ r: 3, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)" }}
+                activeDot={{ r: 6, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)" }}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       )}
 
-      {detailOpen && !hidden && (
-        <div className="modalBg" onClick={() => setDetailOpen(false)}>
+      {detailOpen && (
+        <div
+          className="modalBg"
+          onClick={() => setDetailOpen(false)}
+          style={{
+            alignItems: "flex-end",
+            padding: 0
+          }}
+        >
           <div
             className="modal"
             onClick={(e) => e.stopPropagation()}
             style={{
-              maxWidth: 760,
-              maxHeight: "88vh",
-              overflowY: "auto",
-              WebkitOverflowScrolling: "touch"
+              width: "100%",
+              maxWidth: 720,
+              maxHeight: "86vh",
+              borderRadius: "24px 24px 0 0",
+              overflowY: "auto"
             }}
           >
-            <div className="row">
+            <div className="row" style={{ alignItems: "flex-start" }}>
               <div>
-                <h2>What Changed?</h2>
-                <p className="muted small" style={{ marginBottom: 0 }}>
-                  Now: {latestEntry?.date ? new Date(latestEntry.date).toLocaleString() : "—"}
-                  {referenceEntry?.date ? ` · Ref: ${new Date(referenceEntry.date).toLocaleString()}` : ""}
+                <h2>What changed?</h2>
+                <p className="muted small" style={{ marginTop: 4 }}>
+                  Compared with the previous stored price snapshot. New assets show +0 until they have a previous value.
                 </p>
               </div>
               <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>✕</button>
             </div>
 
-            <div className="stats" style={{ marginTop: 12 }}>
-              <Stat
-                label="Reference change"
-                value={`${totalChange >= 0 ? "+" : ""}${formatCurrency(totalChange, currency)}`}
-                sub={referenceTotal > 0 ? `${totalChange >= 0 ? "+" : ""}${totalChangePct.toFixed(2)}%` : "No reference total"}
-                good={totalChange >= 0}
-              />
-              <Stat
-                label="Since first snapshot"
-                value={`${allTimeChange >= 0 ? "+" : ""}${formatCurrency(allTimeChange, currency)}`}
-                sub={`${allTimeChange >= 0 ? "+" : ""}${allTimeChangePct.toFixed(2)}%`}
-                good={allTimeChange >= 0}
-              />
-              <Stat
-                label="Latest total"
-                value={formatCurrency(latest, currency)}
-                sub={`${latestAssets.length || "—"} assets in snapshot`}
-              />
-            </div>
+            {groupedList.length === 0 ? (
+              <div className="empty">
+                <p>No asset-level snapshot yet. Press Refresh once, update prices later, then press Refresh again.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {groupedList.map((group) => {
+                  const isOpen = !!expandedTypes[group.type];
+                  return (
+                    <div
+                      key={group.type}
+                      className="stat"
+                      style={{
+                        padding: 12,
+                        borderRadius: 16
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => toggleType(group.type)}
+                        style={{
+                          width: "100%",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 12,
+                          padding: 0,
+                          textAlign: "left"
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 850 }}>{group.name}</div>
+                          <div className="muted small">
+                            Now {displayThb(group.currentValueThb)} · {group.items.length} asset{group.items.length === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", minWidth: 112 }}>
+                          <div className={group.changeThb >= 0 ? "green statValue" : "red statValue"}>
+                            {signedDisplayThb(group.changeThb)}
+                          </div>
+                          <div className="muted small">{isOpen ? "Hide" : "View assets"}</div>
+                        </div>
+                      </button>
 
-            <h3 style={{ marginTop: 18 }}>Asset type breakdown</h3>
-            <p className="muted small">
-              Compares each asset's current price with the previous-day/reference price. New assets show +0 until they have a reference.
-            </p>
-
-            <div style={{ marginTop: 10 }}>
-              {typeRows.map((row) => {
-                const isExpanded = expandedType === row.type;
-                const canExpand = row.assets.length > 0;
-                return (
-                  <div key={row.type}>
-                    <RowCard
-                      label={row.label}
-                      sub={`${row.assets.length} asset${row.assets.length === 1 ? "" : "s"}`}
-                      current={row.current}
-                      previous={row.previous}
-                      delta={row.delta}
-                      count={row.assets.length}
-                      expanded={isExpanded}
-                      onClick={() => canExpand && setExpandedType(isExpanded ? null : row.type)}
-                    />
-
-                    {isExpanded && (
-                      <div style={{ margin: "-2px 0 12px 16px", borderLeft: "2px solid var(--border)", paddingLeft: 12 }}>
-                        {row.assets.map((asset) => (
-                          <RowCard
-                            key={asset.id || `${asset.name}-${asset.ticker}`}
-                            label={asset.name}
-                            sub={`${asset.ticker || "No ticker"} · ${asset.source || "Manual / saved"}`}
-                            current={asset.current}
-                            previous={asset.previous}
-                            delta={asset.delta}
-                            asset={asset}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {typeRows.length === 0 && (
-                <p className="muted">No detailed reference data yet. Press Refresh once to create a detailed snapshot.</p>
-              )}
-            </div>
-
-            <div className="muted small" style={{ marginTop: 14 }}>
-              Auto assets compare with the previous-day/reference snapshot. Manual stock/fund assets compare your current typed price with the previous stored typed price.
-            </div>
+                      {isOpen && (
+                        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                          {group.items
+                            .sort((a, b) => Math.abs(Number(b.changeThb) || 0) - Math.abs(Number(a.changeThb) || 0))
+                            .map((item) => (
+                              <div
+                                key={item.key}
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "1fr auto",
+                                  gap: 10,
+                                  padding: "10px 0",
+                                  borderTop: "1px solid var(--border)"
+                                }}
+                              >
+                                <div>
+                                  <div style={{ fontWeight: 760 }}>{item.name}</div>
+                                  <div className="muted small">
+                                    {item.ticker ? `${item.ticker} · ` : ""}
+                                    Now {displayThb(item.currentValueThb)}
+                                  </div>
+                                  {item.quantity > 0 && item.currentUnitPriceThb > 0 && (
+                                    <div className="muted small">
+                                      Unit {displayThb(item.currentUnitPriceThb)}
+                                      {item.previousUnitPriceThb !== null && item.previousUnitPriceThb > 0
+                                        ? ` · unit change ${signedDisplayThb(item.unitChangeThb)}`
+                                        : " · new/no previous unit price"}
+                                    </div>
+                                  )}
+                                </div>
+                                <div style={{ textAlign: "right" }}>
+                                  <div className={item.changeThb >= 0 ? "green" : "red"} style={{ fontWeight: 850 }}>
+                                    {signedDisplayThb(item.changeThb)}
+                                  </div>
+                                  <div className="muted small">
+                                    {item.isNew ? "new" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}
     </section>
   );
 }
+
 
 function recalculateAssetFromTransactions(asset, transactions) {
   const totalQty = transactions.reduce(
