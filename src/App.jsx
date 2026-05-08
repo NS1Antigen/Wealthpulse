@@ -445,7 +445,8 @@ function App() {
 
       const withValues = currentAssets.map((a) => ({
         ...a,
-        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb)
+        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb),
+        costValueThb: getAssetCostValueThb(a, finalUsdToThb)
       }));
 
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
@@ -453,6 +454,24 @@ function App() {
       withValues.forEach((a) => {
         breakdown[a.asset_type] = (breakdown[a.asset_type] || 0) + a.currentValueThb;
       });
+
+      // Store extra details inside the timeline snapshot so the Net Worth Timeline
+      // can explain what made the portfolio change after each refresh.
+      breakdown.__assetDetails = withValues
+        .map((a) => ({
+          id: a.id,
+          name: a.name || "Unnamed asset",
+          ticker: a.ticker || "",
+          asset_type: a.asset_type,
+          quantity: Number(a.quantity) || 0,
+          currentValueThb: Number(a.currentValueThb) || 0,
+          costValueThb: Number(a.costValueThb) || 0,
+          price: Number(finalPrices?.[a.ticker]?.price) || Number(a.manual_value_thb) || 0,
+          priceCurrency: finalPrices?.[a.ticker]?.currency || a.current_price_currency || "THB",
+          source: finalPrices?.[a.ticker]?.source || "Manual / saved"
+        }))
+        .sort((a, b) => b.currentValueThb - a.currentValueThb);
+      breakdown.__assetCount = breakdown.__assetDetails.length;
 
       addTimelineEntry(totalThb, totalThb / finalUsdToThb, breakdown);
       setTimeline(getTimeline());
@@ -1007,19 +1026,97 @@ function Stat({ label, value, sub, good, warn }) {
 }
 
 function NetWorthChart({ timeline, currency, hidden }) {
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  function getSnapshotValue(entry) {
+    if (!entry) return 0;
+    return currency === "THB"
+      ? Number(entry.totalThb) || 0
+      : Number(entry.totalUsd) || 0;
+  }
+
+  function getFxFromSnapshot(entry) {
+    const thb = Number(entry?.totalThb) || 0;
+    const usd = Number(entry?.totalUsd) || 0;
+    return thb > 0 && usd > 0 ? thb / usd : 1;
+  }
+
+  function convertSnapshotThb(valueThb, entry) {
+    if (currency === "THB") return Number(valueThb) || 0;
+    const fx = getFxFromSnapshot(entry);
+    return fx > 0 ? (Number(valueThb) || 0) / fx : 0;
+  }
+
+  function cleanBreakdown(entry) {
+    const raw = entry?.breakdown || {};
+    return Object.fromEntries(
+      Object.entries(raw).filter(([key, value]) => !key.startsWith("__") && Number(value) > 0)
+    );
+  }
+
   const data = timeline.map((t) => ({
     date: t.date,
     displayDate: new Date(t.date).toLocaleDateString(undefined, {
       month: "short",
       day: "numeric"
     }),
-    value: currency === "THB" ? t.totalThb : t.totalUsd
+    value: getSnapshotValue(t),
+    raw: t
   }));
 
-  const latest = data[data.length - 1]?.value || 0;
-  const first = data[0]?.value || 0;
+  const latestEntry = timeline[timeline.length - 1] || null;
+  const previousEntry = timeline[timeline.length - 2] || null;
+  const latest = getSnapshotValue(latestEntry);
+  const first = getSnapshotValue(timeline[0]);
+  const previous = getSnapshotValue(previousEntry);
   const change = latest - first;
   const changePct = first > 0 ? (change / first) * 100 : 0;
+  const latestChange = latest - previous;
+  const latestChangePct = previous > 0 ? (latestChange / previous) * 100 : 0;
+
+  const latestBreakdown = cleanBreakdown(latestEntry);
+  const previousBreakdown = cleanBreakdown(previousEntry);
+
+  const typeRows = Array.from(
+    new Set([...Object.keys(latestBreakdown), ...Object.keys(previousBreakdown)])
+  )
+    .map((type) => {
+      const currentThb = Number(latestBreakdown[type]) || 0;
+      const previousThb = Number(previousBreakdown[type]) || 0;
+      const deltaThb = currentThb - previousThb;
+      return {
+        type,
+        label: TYPE_LABELS[type] || type,
+        current: convertSnapshotThb(currentThb, latestEntry),
+        previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
+        delta: convertSnapshotThb(deltaThb, latestEntry)
+      };
+    })
+    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const latestAssets = latestEntry?.breakdown?.__assetDetails || [];
+  const previousAssets = previousEntry?.breakdown?.__assetDetails || [];
+  const previousAssetMap = new Map(
+    previousAssets.map((a) => [String(a.id || `${a.name}-${a.ticker}`), a])
+  );
+
+  const assetRows = latestAssets
+    .map((asset) => {
+      const key = String(asset.id || `${asset.name}-${asset.ticker}`);
+      const prev = previousAssetMap.get(key);
+      const currentThb = Number(asset.currentValueThb) || 0;
+      const previousThb = Number(prev?.currentValueThb) || 0;
+      const deltaThb = currentThb - previousThb;
+      return {
+        ...asset,
+        current: convertSnapshotThb(currentThb, latestEntry),
+        previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
+        delta: convertSnapshotThb(deltaThb, latestEntry)
+      };
+    })
+    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.delta) > 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
   return (
     <section className="card">
@@ -1031,70 +1128,176 @@ function NetWorthChart({ timeline, currency, hidden }) {
           </p>
         </div>
         {data.length >= 2 && !hidden && (
-          <div className={change >= 0 ? "green statValue" : "red statValue"} style={{ textAlign: "right" }}>
-            {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
-            <div className="muted small">
-              {change >= 0 ? "+" : ""}{changePct.toFixed(2)}%
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setDetailOpen(true)}
+            style={{ textAlign: "right", padding: 8, borderRadius: 14 }}
+            title="Tap to see what caused the portfolio change"
+          >
+            <div className={change >= 0 ? "green statValue" : "red statValue"}>
+              {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
             </div>
-          </div>
+            <div className="muted small">
+              {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap for details
+            </div>
+          </button>
         )}
       </div>
 
       {data.length < 2 ? (
         <p className="muted chartEmpty">Refresh prices on different days to build your timeline.</p>
       ) : (
-        <div className="areaBox">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.32} />
-                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" opacity={0.55} />
-              <XAxis
-                dataKey="displayDate"
-                tick={{ fill: "var(--muted)", fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
+        <>
+          <div className="areaBox">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.32} />
+                    <stop offset="95%" stopColor="var(--primary)" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="4 4" opacity={0.55} />
+                <XAxis
+                  dataKey="displayDate"
+                  tick={{ fill: "var(--muted)", fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  hide={hidden}
+                  tick={{ fill: "var(--muted)", fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={72}
+                  tickFormatter={(v) => {
+                    if (hidden) return "";
+                    if (Math.abs(v) >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+                    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}K`;
+                    return v;
+                  }}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--card)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    boxShadow: "var(--shadow)",
+                    color: "var(--text)"
+                  }}
+                  labelStyle={{ color: "var(--muted)", fontSize: 12 }}
+                  formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
+                  labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="value"
+                  stroke="var(--primary)"
+                  strokeWidth={3}
+                  fill="url(#wealthGradient)"
+                  dot={{ r: 3, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)" }}
+                  activeDot={{ r: 6, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)" }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="muted small" style={{ marginTop: 10 }}>
+            Latest snapshot change: {latestChange >= 0 ? "+" : ""}{formatCurrency(latestChange, currency)}
+            {previous > 0 ? ` (${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%)` : ""}
+          </div>
+        </>
+      )}
+
+      {detailOpen && !hidden && (
+        <div className="modalBg" onClick={() => setDetailOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760 }}>
+            <div className="row">
+              <div>
+                <h2>Net Worth Change Details</h2>
+                <p className="muted small" style={{ marginBottom: 0 }}>
+                  Latest snapshot: {latestEntry?.date ? new Date(latestEntry.date).toLocaleString() : "—"}
+                </p>
+              </div>
+              <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>✕</button>
+            </div>
+
+            <div className="stats" style={{ marginTop: 12 }}>
+              <Stat
+                label="From first snapshot"
+                value={`${change >= 0 ? "+" : ""}${formatCurrency(change, currency)}`}
+                sub={`${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%`}
+                good={change >= 0}
               />
-              <YAxis
-                hide={hidden}
-                tick={{ fill: "var(--muted)", fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                width={72}
-                tickFormatter={(v) => {
-                  if (hidden) return "";
-                  if (Math.abs(v) >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
-                  if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(0)}K`;
-                  return v;
-                }}
+              <Stat
+                label="From previous snapshot"
+                value={`${latestChange >= 0 ? "+" : ""}${formatCurrency(latestChange, currency)}`}
+                sub={previous > 0 ? `${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%` : "No previous total"}
+                good={latestChange >= 0}
               />
-              <Tooltip
-                contentStyle={{
-                  background: "var(--card)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 14,
-                  boxShadow: "var(--shadow)",
-                  color: "var(--text)"
-                }}
-                labelStyle={{ color: "var(--muted)", fontSize: 12 }}
-                formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
-                labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+              <Stat
+                label="Latest total"
+                value={formatCurrency(latest, currency)}
+                sub={`${latestAssets.length || "—"} assets in snapshot`}
               />
-              <Area
-                type="monotone"
-                dataKey="value"
-                stroke="var(--primary)"
-                strokeWidth={3}
-                fill="url(#wealthGradient)"
-                dot={{ r: 3, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)" }}
-                activeDot={{ r: 6, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)" }}
+              <Stat
+                label="Previous total"
+                value={formatCurrency(previous, currency)}
+                sub={previousEntry?.date ? new Date(previousEntry.date).toLocaleString() : "—"}
               />
-            </AreaChart>
-          </ResponsiveContainer>
+            </div>
+
+            <h3 style={{ marginTop: 18 }}>Change by asset type</h3>
+            <div className="table" style={{ marginTop: 8 }}>
+              <div className="tableHead">
+                <span>Asset Type</span><span>Current</span><span>Previous</span><span>Change</span><span></span>
+              </div>
+              {typeRows.map((row) => (
+                <div className="tableRow" key={row.type}>
+                  <span><b>{row.label}</b></span>
+                  <span>{formatCurrency(row.current, currency)}</span>
+                  <span>{formatCurrency(row.previous, currency)}</span>
+                  <span className={row.delta >= 0 ? "green" : "red"}>
+                    {row.delta >= 0 ? "+" : ""}{formatCurrency(row.delta, currency)}
+                  </span>
+                  <span></span>
+                </div>
+              ))}
+              {typeRows.length === 0 && <p className="muted">No breakdown data saved yet. Press Refresh once to create a detailed snapshot.</p>}
+            </div>
+
+            <h3 style={{ marginTop: 18 }}>Top asset contributors</h3>
+            <p className="muted small">
+              This section is most detailed after your next Refresh because new snapshots save asset-level details.
+            </p>
+            <div className="table" style={{ marginTop: 8 }}>
+              <div className="tableHead">
+                <span>Asset</span><span>Value</span><span>Change</span><span>Source</span><span></span>
+              </div>
+              {assetRows.slice(0, 12).map((row) => (
+                <div className="tableRow" key={row.id || `${row.name}-${row.ticker}`}>
+                  <span>
+                    <b>{row.name}</b>
+                    <div className="muted small">
+                      {TYPE_LABELS[row.asset_type] || row.asset_type}{row.ticker ? ` · ${row.ticker}` : ""}
+                    </div>
+                  </span>
+                  <span>{formatCurrency(row.current, currency)}</span>
+                  <span className={row.delta >= 0 ? "green" : "red"}>
+                    {row.delta >= 0 ? "+" : ""}{formatCurrency(row.delta, currency)}
+                  </span>
+                  <span className="muted small">{row.source || "Manual / saved"}</span>
+                  <span></span>
+                </div>
+              ))}
+              {assetRows.length === 0 && <p className="muted">No asset-level snapshot details yet. Press Refresh to save them.</p>}
+            </div>
+
+            <div className="muted small" style={{ marginTop: 14 }}>
+              Tip: this shows what changed between snapshots. It includes price changes, manual price edits, added assets, removed assets, deposits, and withdrawals.
+            </div>
+          </div>
         </div>
       )}
     </section>
