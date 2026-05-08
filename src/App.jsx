@@ -108,6 +108,12 @@ const TRADINGVIEW_STOCK_DATABASE = [
   { symbol: "NASDAQ:QQQ", name: "Nasdaq 100 ETF", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" }
 ];
 
+const STOCK_EXCHANGE_OPTIONS = {
+  thai_stock: ["SET"],
+  international_stock: ["NASDAQ", "NYSE", "AMEX", "BATS", "OTC"],
+  default: ["NASDAQ", "NYSE", "AMEX", "SET"]
+};
+
 const TYPE_LABELS = Object.fromEntries(
   ASSET_TYPES.map((a) => [a.value, a.label.replace(/^.. /, "")])
 );
@@ -144,35 +150,74 @@ function normalizeSymbol(value) {
     .replace(/\s+/g, "");
 }
 
+function splitTradingViewSymbol(value, assetType = "international_stock") {
+  const raw = String(value || "").trim().toUpperCase();
+
+  if (!raw) {
+    return {
+      exchange: assetType === "thai_stock" ? "SET" : "NASDAQ",
+      ticker: ""
+    };
+  }
+
+  if (raw.includes(":")) {
+    const [exchange, ...rest] = raw.split(":");
+    return {
+      exchange: exchange || (assetType === "thai_stock" ? "SET" : "NASDAQ"),
+      ticker: rest.join(":") || ""
+    };
+  }
+
+  if (raw.endsWith(".BK")) {
+    return { exchange: "SET", ticker: raw.replace(/\.BK$/, "") };
+  }
+
+  return {
+    exchange: assetType === "thai_stock" ? "SET" : "NASDAQ",
+    ticker: raw
+  };
+}
+
+function defaultStockExchange(assetType) {
+  if (assetType === "thai_stock") return "SET";
+  if (assetType === "international_stock") return "NASDAQ";
+  return "NASDAQ";
+}
+
+function buildTradingViewSymbol(ticker, exchange, assetType) {
+  const shortTicker = String(ticker || "").trim().toUpperCase();
+  if (!shortTicker) return "";
+
+  if (shortTicker.includes(":")) return shortTicker;
+
+  const finalExchange = String(exchange || defaultStockExchange(assetType)).trim().toUpperCase();
+  return `${finalExchange}:${shortTicker.replace(/\.BK$/, "")}`;
+}
+
+function getExchangeOptionsForAssetType(assetType) {
+  return STOCK_EXCHANGE_OPTIONS[assetType] || STOCK_EXCHANGE_OPTIONS.default;
+}
+
 function isScbSp500Fund(symbol) {
   const s = normalizeSymbol(symbol);
   return s === "SCBS&P500" || s === "SCBSP500";
 }
 
-function getTradingViewSymbol(ticker, assetType) {
+function getTradingViewSymbol(ticker, assetType, exchange) {
   const raw = String(ticker || "").trim().toUpperCase();
   if (!raw) return "";
 
   if (raw.includes(":")) return raw;
 
-  if (assetType === "thai_stock") {
-    return `SET:${raw.replace(/\.BK$/, "")}`;
-  }
-
-  if (assetType === "international_stock") {
-    const known = TRADINGVIEW_STOCK_DATABASE.find((item) => {
-      const shortSymbol = item.symbol.split(":").pop();
-      return item.asset_type === "international_stock" && shortSymbol === raw;
-    });
-
-    return known?.symbol || `NASDAQ:${raw}`;
+  if (assetType === "thai_stock" || assetType === "international_stock") {
+    return buildTradingViewSymbol(raw, exchange, assetType);
   }
 
   return raw;
 }
 
-function openTradingViewChart(ticker, assetType) {
-  const symbol = getTradingViewSymbol(ticker, assetType);
+function openTradingViewChart(ticker, assetType, exchange) {
+  const symbol = getTradingViewSymbol(ticker, assetType, exchange);
 
   if (!symbol) {
     alert("Please enter a ticker symbol first.");
@@ -475,7 +520,8 @@ function App() {
               setModalAsset({
                 name: asset.name,
                 asset_type: asset.asset_type,
-                ticker: asset.symbol,
+                ticker: splitTradingViewSymbol(asset.symbol, asset.asset_type).ticker || asset.symbol,
+                stock_exchange: splitTradingViewSymbol(asset.symbol, asset.asset_type).exchange,
                 quantity: "",
                 purchase_price_per_unit: "",
                 purchase_currency: asset.currency || defaultCurrentPriceCurrency(asset.asset_type),
@@ -643,6 +689,7 @@ function App() {
                   purchase_price_per_unit: avgCost,
                   cost_incomplete: knownQty < totalQty,
                   current_price_currency: data.current_price_currency || existing.current_price_currency,
+                  stock_exchange: data.stock_exchange || existing.stock_exchange || "",
                   manual_value_thb: data.manual_value_thb,
                   manual_ivv_close_price: data.manual_ivv_close_price,
                   ivv_last_updated: data.ivv_last_updated,
@@ -1551,7 +1598,10 @@ function AssetForm({ editingAsset, onClose, onSave }) {
   const [form, setForm] = useState(() => ({
     name: editingAsset?.name || "",
     asset_type: editingAsset?.asset_type || "bitcoin",
-    ticker: editingAsset?.ticker || defaultTicker(editingAsset?.asset_type || "bitcoin"),
+    ticker: (editingAsset?.asset_type === "thai_stock" || editingAsset?.asset_type === "international_stock")
+      ? splitTradingViewSymbol(editingAsset?.ticker, editingAsset?.asset_type).ticker
+      : editingAsset?.ticker || defaultTicker(editingAsset?.asset_type || "bitcoin"),
+    stock_exchange: editingAsset?.stock_exchange || splitTradingViewSymbol(editingAsset?.ticker, editingAsset?.asset_type || "international_stock").exchange,
     quantity: editingAsset?.quantity || "",
     manual_value_thb: editingAsset?.manual_value_thb || "",
     manual_ivv_close_price: editingAsset?.manual_ivv_close_price || "",
@@ -1665,7 +1715,12 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       ...f,
       name: asset.name || "",
       asset_type: asset.asset_type || "bitcoin",
-      ticker: asset.asset_type === "cash" ? "" : (asset.ticker || defaultTicker(asset.asset_type)),
+      ticker: asset.asset_type === "cash"
+        ? ""
+        : (asset.asset_type === "thai_stock" || asset.asset_type === "international_stock")
+        ? splitTradingViewSymbol(asset.ticker, asset.asset_type).ticker
+        : (asset.ticker || defaultTicker(asset.asset_type)),
+      stock_exchange: asset.stock_exchange || splitTradingViewSymbol(asset.ticker, asset.asset_type).exchange,
       current_price_currency: asset.current_price_currency || defaultCurrentPriceCurrency(asset.asset_type),
       purchase_currency: asset.asset_type === "cash" ? "THB" : (asset.purchase_currency || defaultCurrentPriceCurrency(asset.asset_type)),
       purchase_price_per_unit: asset.asset_type === "cash" ? "" : f.purchase_price_per_unit,
@@ -1688,6 +1743,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       ...f,
       asset_type: type,
       ticker: defaultTicker(type),
+      stock_exchange: defaultStockExchange(type),
       quantity: type === "cash" ? "" : f.quantity,
       manual_value_thb: "",
       manual_ivv_close_price: type === "mutual_fund" ? f.manual_ivv_close_price : "",
@@ -1715,8 +1771,13 @@ function AssetForm({ editingAsset, onClose, onSave }) {
       asset_type: form.asset_type,
       ticker: form.asset_type === "cash"
         ? ""
+        : (form.asset_type === "thai_stock" || form.asset_type === "international_stock")
+        ? buildTradingViewSymbol(form.ticker, form.stock_exchange, form.asset_type)
         : needsSymbol(form.asset_type)
         ? String(form.ticker || "").trim().toUpperCase()
+        : "",
+      stock_exchange: (form.asset_type === "thai_stock" || form.asset_type === "international_stock")
+        ? String(form.stock_exchange || defaultStockExchange(form.asset_type)).toUpperCase()
         : "",
       quantity,
       manual_value_thb: manualValue,
@@ -1825,32 +1886,62 @@ function AssetForm({ editingAsset, onClose, onSave }) {
 
         {needsSymbol(form.asset_type) && (
           <>
-            <label>{form.asset_type === "mutual_fund" ? "Fund Code / Ticker" : needsLiveTicker(form.asset_type) ? "Live Ticker Symbol" : "Symbol / Fund Code"}</label>
-            <input
-              value={form.ticker}
-              onFocus={async () => {
-                if (form.asset_type === "mutual_fund") {
-                  setTickerSuggestions(
-                    MUTUAL_FUND_DATABASE.map((fund) => ({
-                      symbol: fund.symbol,
-                      name: `${fund.name} · ${fund.amc}`,
-                      exchange: "Thai Mutual Fund"
-                    }))
-                  );
-                } else if (form.asset_type === "thai_stock" || form.asset_type === "international_stock") {
-                  const results = await searchTickerSuggestions(form.ticker, form.asset_type);
-                  setTickerSuggestions(results);
+            <label>{form.asset_type === "mutual_fund" ? "Fund Code / Ticker" : (form.asset_type === "thai_stock" || form.asset_type === "international_stock") ? "Ticker" : needsLiveTicker(form.asset_type) ? "Live Ticker Symbol" : "Symbol / Fund Code"}</label>
+
+            {(form.asset_type === "thai_stock" || form.asset_type === "international_stock") && (
+              <div className="twoCols">
+                <div>
+                  <input
+                    value={form.ticker}
+                    onFocus={async () => {
+                      const results = await searchTickerSuggestions(form.ticker, form.asset_type);
+                      setTickerSuggestions(results);
+                    }}
+                    onChange={(e) => set("ticker", e.target.value.toUpperCase().replace(/[^A-Z0-9._-]/g, ""))}
+                    placeholder={form.asset_type === "thai_stock" ? "Example: LH" : "Example: META or ASTS"}
+                  />
+                </div>
+                <div>
+                  <select
+                    value={form.stock_exchange || defaultStockExchange(form.asset_type)}
+                    onChange={(e) => set("stock_exchange", e.target.value)}
+                  >
+                    {getExchangeOptionsForAssetType(form.asset_type).map((ex) => (
+                      <option value={ex} key={ex}>{ex}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {!(form.asset_type === "thai_stock" || form.asset_type === "international_stock") && (
+              <input
+                value={form.ticker}
+                onFocus={async () => {
+                  if (form.asset_type === "mutual_fund") {
+                    setTickerSuggestions(
+                      MUTUAL_FUND_DATABASE.map((fund) => ({
+                        symbol: fund.symbol,
+                        name: `${fund.name} · ${fund.amc}`,
+                        exchange: "Thai Mutual Fund"
+                      }))
+                    );
+                  }
+                }}
+                onChange={(e) => set("ticker", e.target.value.toUpperCase())}
+                placeholder={
+                  form.asset_type === "bitcoin" ? "BTC" :
+                  form.asset_type === "thai_gold" ? "THAI-GOLD" :
+                  form.asset_type === "mutual_fund" ? "Example: SCBS&P500" : "Example: ETH"
                 }
-              }}
-              onChange={(e) => set("ticker", e.target.value.toUpperCase())}
-              placeholder={
-                form.asset_type === "bitcoin" ? "BTC" :
-                form.asset_type === "thai_gold" ? "THAI-GOLD" :
-                form.asset_type === "thai_stock" ? "Example: SET:PTT" :
-                form.asset_type === "mutual_fund" ? "Example: SCBS&P500" :
-                form.asset_type === "international_stock" ? "Example: NASDAQ:META or NASDAQ:ASTS" : "Example: ETH"
-              }
-            />
+              />
+            )}
+
+            {(form.asset_type === "thai_stock" || form.asset_type === "international_stock") && (
+              <div className="muted small">
+                TradingView symbol preview: {buildTradingViewSymbol(form.ticker, form.stock_exchange, form.asset_type) || "—"}
+              </div>
+            )}
 
             {searchingTicker && <div className="muted small">Searching ticker...</div>}
 
@@ -1862,7 +1953,18 @@ function AssetForm({ editingAsset, onClose, onSave }) {
                     key={`${item.symbol}-${item.exchange}`}
                     className="suggestItem"
                     onClick={() => {
-                      set("ticker", item.symbol.toUpperCase());
+                      if (form.asset_type === "thai_stock" || form.asset_type === "international_stock") {
+                        const parsed = splitTradingViewSymbol(item.symbol, form.asset_type);
+                        setForm((f) => ({
+                          ...f,
+                          ticker: parsed.ticker,
+                          stock_exchange: parsed.exchange,
+                          name: f.name || item.name || f.name,
+                          current_price_currency: item.currency || f.current_price_currency
+                        }));
+                      } else {
+                        set("ticker", item.symbol.toUpperCase());
+                      }
                       setTickerSuggestions([]);
                     }}
                   >
@@ -1943,7 +2045,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
                   type="button"
                   className="outline"
                   style={{ marginTop: 10 }}
-                  onClick={() => openTradingViewChart(form.ticker, form.asset_type)}
+                  onClick={() => openTradingViewChart(form.ticker, form.asset_type, form.stock_exchange)}
                 >
                   Open TradingView Chart
                 </button>
