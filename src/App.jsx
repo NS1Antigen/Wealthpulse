@@ -400,88 +400,79 @@ function convertThb(valueThb, usdToThb, currency) {
 const ASSET_VALUE_SNAPSHOT_KEY = "wp_asset_value_snapshot_v1";
 const ASSET_DELTA_KEY = "wp_asset_delta_latest_v1";
 
-function loadJsonLocal(key, fallback) {
+function safeLoadJson(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
-  } catch {
+  } catch (err) {
+    console.warn("Failed to read localStorage:", key, err);
     return fallback;
   }
 }
 
-function saveJsonLocal(key, value) {
+function safeSaveJson(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (err) {
-    console.warn("Local snapshot save failed", key, err);
+    console.warn("Failed to save localStorage:", key, err);
   }
 }
 
-function assetSnapshotKey(asset) {
-  return String(asset.id || `${asset.asset_type}-${asset.ticker || asset.name}`);
+function makeAssetSnapshotKey(asset) {
+  return String(asset?.id || `${asset?.asset_type || "asset"}-${asset?.ticker || asset?.name || ""}`);
 }
 
-function loadLatestAssetDeltas() {
-  const saved = loadJsonLocal(ASSET_DELTA_KEY, null);
+function getLatestAssetDeltas() {
+  const saved = safeLoadJson(ASSET_DELTA_KEY, { items: [] });
   return Array.isArray(saved?.items) ? saved.items : [];
 }
 
-function getAssetUnitPriceThb(asset, currentValueThb) {
-  const qty = safeNumber(asset.quantity);
-  if (!qty || asset.asset_type === "cash") return 0;
-  return currentValueThb / qty;
-}
+function buildAndSaveAssetDeltas(assetsWithValues) {
+  const previousSnapshot = safeLoadJson(ASSET_VALUE_SNAPSHOT_KEY, {});
+  const nextSnapshot = {};
+  const now = new Date().toISOString();
 
-function buildAssetDeltaItems(assetsWithCurrentValues) {
-  const previousSnapshot = loadJsonLocal(ASSET_VALUE_SNAPSHOT_KEY, {});
-  const nowSnapshot = {};
-  const items = assetsWithCurrentValues.map((asset) => {
-    const key = assetSnapshotKey(asset);
+  const items = (assetsWithValues || []).map((asset) => {
+    const key = makeAssetSnapshotKey(asset);
+    const quantity = safeNumber(asset.quantity);
     const currentValueThb = safeNumber(asset.currentValueThb);
-    const currentUnitPriceThb = getAssetUnitPriceThb(asset, currentValueThb);
-    const previous = previousSnapshot[key];
+    const currentUnitPriceThb =
+      quantity > 0 && asset.asset_type !== "cash"
+        ? currentValueThb / quantity
+        : 0;
 
+    const previous = previousSnapshot?.[key] || null;
     const previousValueThb = Number.isFinite(Number(previous?.valueThb))
       ? Number(previous.valueThb)
       : null;
-
     const previousUnitPriceThb = Number.isFinite(Number(previous?.unitPriceThb))
       ? Number(previous.unitPriceThb)
       : null;
 
-    const changeThb =
-      previousValueThb === null
-        ? 0
-        : currentValueThb - previousValueThb;
-
+    const changeThb = previousValueThb === null ? 0 : currentValueThb - previousValueThb;
     const unitChangeThb =
-      previousUnitPriceThb === null
-        ? 0
-        : currentUnitPriceThb - previousUnitPriceThb;
-
+      previousUnitPriceThb === null ? 0 : currentUnitPriceThb - previousUnitPriceThb;
     const changePct =
-      previousValueThb && previousValueThb > 0
-        ? (changeThb / previousValueThb) * 100
-        : 0;
+      previousValueThb && previousValueThb > 0 ? (changeThb / previousValueThb) * 100 : 0;
 
-    nowSnapshot[key] = {
+    nextSnapshot[key] = {
       id: asset.id,
       name: asset.name,
       ticker: asset.ticker,
       asset_type: asset.asset_type,
       valueThb: currentValueThb,
       unitPriceThb: currentUnitPriceThb,
-      quantity: safeNumber(asset.quantity),
-      savedAt: new Date().toISOString()
+      quantity,
+      savedAt: now
     };
 
     return {
-      id: asset.id,
       key,
+      id: asset.id,
       name: asset.name || asset.ticker || "Unnamed asset",
       ticker: asset.ticker || "",
-      asset_type: asset.asset_type,
-      quantity: safeNumber(asset.quantity),
+      asset_type: asset.asset_type || "other",
+      quantity,
       currentValueThb,
       previousValueThb,
       changeThb,
@@ -493,17 +484,13 @@ function buildAssetDeltaItems(assetsWithCurrentValues) {
     };
   });
 
-  saveJsonLocal(ASSET_VALUE_SNAPSHOT_KEY, nowSnapshot);
-  saveJsonLocal(ASSET_DELTA_KEY, {
-    timestamp: new Date().toISOString(),
-    items
-  });
-
+  safeSaveJson(ASSET_VALUE_SNAPSHOT_KEY, nextSnapshot);
+  safeSaveJson(ASSET_DELTA_KEY, { timestamp: now, items });
   return items;
 }
 
-function typeDisplayName(type) {
-  return TYPE_LABELS[type] || type;
+function getTypeDisplayName(type) {
+  return TYPE_LABELS[type] || type || "Other";
 }
 
 function App() {
@@ -520,7 +507,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [modalAsset, setModalAsset] = useState(null);
   const [timeline, setTimeline] = useState(getTimeline());
-  const [assetDeltas, setAssetDeltas] = useState(loadLatestAssetDeltas());
+  const [assetDeltas, setAssetDeltas] = useState(getLatestAssetDeltas());
   const [unlocked, setUnlocked] = useState(!hasPinSet());
 
   useEffect(() => {
@@ -555,10 +542,11 @@ function App() {
 
       const withValues = currentAssets.map((a) => ({
         ...a,
-        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb)
+        currentValueThb: getAssetCurrentValueThb(a, finalPrices, finalUsdToThb),
+        costValueThb: getAssetCostValueThb(a, finalUsdToThb)
       }));
 
-      const latestAssetDeltas = buildAssetDeltaItems(withValues);
+      const latestAssetDeltas = buildAndSaveAssetDeltas(withValues);
       setAssetDeltas(latestAssetDeltas);
 
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
@@ -566,6 +554,24 @@ function App() {
       withValues.forEach((a) => {
         breakdown[a.asset_type] = (breakdown[a.asset_type] || 0) + a.currentValueThb;
       });
+
+      // Store extra details inside the timeline snapshot so the Net Worth Timeline
+      // can explain what made the portfolio change after each refresh.
+      breakdown.__assetDetails = withValues
+        .map((a) => ({
+          id: a.id,
+          name: a.name || "Unnamed asset",
+          ticker: a.ticker || "",
+          asset_type: a.asset_type,
+          quantity: Number(a.quantity) || 0,
+          currentValueThb: Number(a.currentValueThb) || 0,
+          costValueThb: Number(a.costValueThb) || 0,
+          price: Number(finalPrices?.[a.ticker]?.price) || Number(a.manual_value_thb) || 0,
+          priceCurrency: finalPrices?.[a.ticker]?.currency || a.current_price_currency || "THB",
+          source: finalPrices?.[a.ticker]?.source || "Manual / saved"
+        }))
+        .sort((a, b) => b.currentValueThb - a.currentValueThb);
+      breakdown.__assetCount = breakdown.__assetDetails.length;
 
       addTimelineEntry(totalThb, totalThb / finalUsdToThb, breakdown);
       setTimeline(getTimeline());
@@ -1138,34 +1144,31 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
   const changePct = first > 0 ? (change / first) * 100 : 0;
   const safeUsdToThb = Number(usdToThb) || 1;
 
-  function displayThb(valueThb) {
-    const value = currency === "USD" ? valueThb / safeUsdToThb : valueThb;
-    return formatCurrency(value, currency);
+  function convertFromThb(valueThb) {
+    return currency === "USD" ? valueThb / safeUsdToThb : valueThb;
   }
 
-  function signedDisplayThb(valueThb) {
-    const sign = valueThb >= 0 ? "+" : "";
-    return `${sign}${displayThb(valueThb)}`;
+  function moneyFromThb(valueThb) {
+    return formatCurrency(convertFromThb(valueThb), currency);
+  }
+
+  function signedMoneyFromThb(valueThb) {
+    const sign = Number(valueThb) >= 0 ? "+" : "";
+    return `${sign}${moneyFromThb(valueThb)}`;
   }
 
   const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
-
-  const sortedItems = [...cleanItems].sort(
-    (a, b) => Math.abs(Number(b.changeThb) || 0) - Math.abs(Number(a.changeThb) || 0)
-  );
-
-  const grouped = sortedItems.reduce((acc, item) => {
+  const grouped = cleanItems.reduce((acc, item) => {
     const type = item.asset_type || "other";
     if (!acc[type]) {
       acc[type] = {
         type,
-        name: typeDisplayName(type),
+        name: getTypeDisplayName(type),
         currentValueThb: 0,
         changeThb: 0,
         items: []
       };
     }
-
     acc[type].currentValueThb += Number(item.currentValueThb) || 0;
     acc[type].changeThb += Number(item.changeThb) || 0;
     acc[type].items.push(item);
@@ -1176,7 +1179,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     (a, b) => Math.abs(b.changeThb) - Math.abs(a.changeThb)
   );
 
-  function toggleType(type) {
+  function toggleGroup(type) {
     setExpandedTypes((old) => ({
       ...old,
       [type]: !old[type]
@@ -1271,10 +1274,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         <div
           className="modalBg"
           onClick={() => setDetailOpen(false)}
-          style={{
-            alignItems: "flex-end",
-            padding: 0
-          }}
+          style={{ alignItems: "flex-end", padding: 0 }}
         >
           <div
             className="modal"
@@ -1283,41 +1283,36 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               width: "100%",
               maxWidth: 720,
               maxHeight: "86vh",
-              borderRadius: "24px 24px 0 0",
-              overflowY: "auto"
+              overflowY: "auto",
+              borderRadius: "24px 24px 0 0"
             }}
           >
             <div className="row" style={{ alignItems: "flex-start" }}>
               <div>
                 <h2>What changed?</h2>
                 <p className="muted small" style={{ marginTop: 4 }}>
-                  Compared with the previous stored price snapshot. New assets show +0 until they have a previous value.
+                  Compared with the previous stored price/value snapshot. New assets show +0 first.
                 </p>
               </div>
-              <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>✕</button>
+              <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>
+                ✕
+              </button>
             </div>
 
             {groupedList.length === 0 ? (
               <div className="empty">
-                <p>No asset-level snapshot yet. Press Refresh once, update prices later, then press Refresh again.</p>
+                <p>Press Refresh once to store a baseline. After prices change, press Refresh again to see asset changes.</p>
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {groupedList.map((group) => {
                   const isOpen = !!expandedTypes[group.type];
                   return (
-                    <div
-                      key={group.type}
-                      className="stat"
-                      style={{
-                        padding: 12,
-                        borderRadius: 16
-                      }}
-                    >
+                    <div className="stat" key={group.type} style={{ padding: 12, borderRadius: 16 }}>
                       <button
                         type="button"
                         className="ghost"
-                        onClick={() => toggleType(group.type)}
+                        onClick={() => toggleGroup(group.type)}
                         style={{
                           width: "100%",
                           display: "flex",
@@ -1331,12 +1326,12 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                         <div>
                           <div style={{ fontWeight: 850 }}>{group.name}</div>
                           <div className="muted small">
-                            Now {displayThb(group.currentValueThb)} · {group.items.length} asset{group.items.length === 1 ? "" : "s"}
+                            Now {moneyFromThb(group.currentValueThb)} · {group.items.length} asset{group.items.length === 1 ? "" : "s"}
                           </div>
                         </div>
                         <div style={{ textAlign: "right", minWidth: 112 }}>
                           <div className={group.changeThb >= 0 ? "green statValue" : "red statValue"}>
-                            {signedDisplayThb(group.changeThb)}
+                            {signedMoneyFromThb(group.changeThb)}
                           </div>
                           <div className="muted small">{isOpen ? "Hide" : "View assets"}</div>
                         </div>
@@ -1345,6 +1340,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                       {isOpen && (
                         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                           {group.items
+                            .slice()
                             .sort((a, b) => Math.abs(Number(b.changeThb) || 0) - Math.abs(Number(a.changeThb) || 0))
                             .map((item) => (
                               <div
@@ -1361,20 +1357,20 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                                   <div style={{ fontWeight: 760 }}>{item.name}</div>
                                   <div className="muted small">
                                     {item.ticker ? `${item.ticker} · ` : ""}
-                                    Now {displayThb(item.currentValueThb)}
+                                    Now {moneyFromThb(item.currentValueThb)}
                                   </div>
                                   {item.quantity > 0 && item.currentUnitPriceThb > 0 && (
                                     <div className="muted small">
-                                      Unit {displayThb(item.currentUnitPriceThb)}
+                                      Unit {moneyFromThb(item.currentUnitPriceThb)}
                                       {item.previousUnitPriceThb !== null && item.previousUnitPriceThb > 0
-                                        ? ` · unit change ${signedDisplayThb(item.unitChangeThb)}`
-                                        : " · new/no previous unit price"}
+                                        ? ` · unit ${signedMoneyFromThb(item.unitChangeThb)}`
+                                        : " · new/no previous unit"}
                                     </div>
                                   )}
                                 </div>
                                 <div style={{ textAlign: "right" }}>
                                   <div className={item.changeThb >= 0 ? "green" : "red"} style={{ fontWeight: 850 }}>
-                                    {signedDisplayThb(item.changeThb)}
+                                    {signedMoneyFromThb(item.changeThb)}
                                   </div>
                                   <div className="muted small">
                                     {item.isNew ? "new" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}
