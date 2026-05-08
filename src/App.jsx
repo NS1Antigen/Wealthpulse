@@ -1027,6 +1027,7 @@ function Stat({ label, value, sub, good, warn }) {
 
 function NetWorthChart({ timeline, currency, hidden }) {
   const [detailOpen, setDetailOpen] = useState(false);
+  const [expandedType, setExpandedType] = useState(null);
 
   function getSnapshotValue(entry) {
     if (!entry) return 0;
@@ -1077,46 +1078,102 @@ function NetWorthChart({ timeline, currency, hidden }) {
   const latestBreakdown = cleanBreakdown(latestEntry);
   const previousBreakdown = cleanBreakdown(previousEntry);
 
+  const latestAssets = latestEntry?.breakdown?.__assetDetails || [];
+  const previousAssets = previousEntry?.breakdown?.__assetDetails || [];
+
+  const latestAssetMap = new Map(
+    latestAssets.map((a) => [String(a.id || `${a.name}-${a.ticker}`), a])
+  );
+  const previousAssetMap = new Map(
+    previousAssets.map((a) => [String(a.id || `${a.name}-${a.ticker}`), a])
+  );
+
+  const assetRows = Array.from(new Set([...latestAssetMap.keys(), ...previousAssetMap.keys()]))
+    .map((key) => {
+      const asset = latestAssetMap.get(key) || previousAssetMap.get(key) || {};
+      const prev = previousAssetMap.get(key) || {};
+      const currentThb = Number(asset.currentValueThb) || 0;
+      const previousThb = Number(prev.currentValueThb) || 0;
+      const deltaThb = currentThb - previousThb;
+
+      return {
+        ...asset,
+        id: asset.id || prev.id || key,
+        name: asset.name || prev.name || "Unnamed asset",
+        ticker: asset.ticker || prev.ticker || "",
+        asset_type: asset.asset_type || prev.asset_type || "other",
+        source: asset.source || prev.source || "Manual / saved",
+        current: convertSnapshotThb(currentThb, latestEntry),
+        previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
+        delta: convertSnapshotThb(deltaThb, latestEntry)
+      };
+    })
+    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0 || Math.abs(row.delta) > 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
   const typeRows = Array.from(
-    new Set([...Object.keys(latestBreakdown), ...Object.keys(previousBreakdown)])
+    new Set([...Object.keys(latestBreakdown), ...Object.keys(previousBreakdown), ...assetRows.map((a) => a.asset_type)])
   )
     .map((type) => {
       const currentThb = Number(latestBreakdown[type]) || 0;
       const previousThb = Number(previousBreakdown[type]) || 0;
       const deltaThb = currentThb - previousThb;
+      const assetsInType = assetRows.filter((a) => a.asset_type === type);
+
       return {
         type,
         label: TYPE_LABELS[type] || type,
         current: convertSnapshotThb(currentThb, latestEntry),
         previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
-        delta: convertSnapshotThb(deltaThb, latestEntry)
+        delta: convertSnapshotThb(deltaThb, latestEntry),
+        assets: assetsInType
       };
     })
-    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0)
+    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0 || Math.abs(row.delta) > 0)
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
-  const latestAssets = latestEntry?.breakdown?.__assetDetails || [];
-  const previousAssets = previousEntry?.breakdown?.__assetDetails || [];
-  const previousAssetMap = new Map(
-    previousAssets.map((a) => [String(a.id || `${a.name}-${a.ticker}`), a])
-  );
+  function RowCard({ label, sub, current, previous, delta, onClick, expanded, count }) {
+    const positive = delta >= 0;
+    return (
+      <button
+        type="button"
+        className="ghost"
+        onClick={onClick}
+        style={{
+          width: "100%",
+          textAlign: "left",
+          padding: 14,
+          borderRadius: 18,
+          border: "1px solid var(--border)",
+          background: "var(--card)",
+          marginBottom: 10,
+          display: "block"
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {label}
+            </div>
+            {sub && <div className="muted small" style={{ marginTop: 3 }}>{sub}</div>}
+            {count > 0 && (
+              <div className="muted small" style={{ marginTop: 4 }}>
+                {expanded ? "Tap to collapse" : `Tap to view ${count} asset${count === 1 ? "" : "s"}`}
+              </div>
+            )}
+          </div>
 
-  const assetRows = latestAssets
-    .map((asset) => {
-      const key = String(asset.id || `${asset.name}-${asset.ticker}`);
-      const prev = previousAssetMap.get(key);
-      const currentThb = Number(asset.currentValueThb) || 0;
-      const previousThb = Number(prev?.currentValueThb) || 0;
-      const deltaThb = currentThb - previousThb;
-      return {
-        ...asset,
-        current: convertSnapshotThb(currentThb, latestEntry),
-        previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
-        delta: convertSnapshotThb(deltaThb, latestEntry)
-      };
-    })
-    .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.delta) > 0)
-    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div className={positive ? "green statValue" : "red statValue"} style={{ fontSize: 16 }}>
+              {positive ? "+" : ""}{formatCurrency(delta, currency)}
+            </div>
+            <div className="muted small">Now {formatCurrency(current, currency)}</div>
+            {previous > 0 && <div className="muted small">Before {formatCurrency(previous, currency)}</div>}
+          </div>
+        </div>
+      </button>
+    );
+  }
 
   return (
     <section className="card">
@@ -1203,19 +1260,36 @@ function NetWorthChart({ timeline, currency, hidden }) {
             </ResponsiveContainer>
           </div>
 
-          <div className="muted small" style={{ marginTop: 10 }}>
-            Latest snapshot change: {latestChange >= 0 ? "+" : ""}{formatCurrency(latestChange, currency)}
-            {previous > 0 ? ` (${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%)` : ""}
-          </div>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setDetailOpen(true)}
+            style={{ marginTop: 10, width: "100%", textAlign: "left", padding: 10, borderRadius: 14 }}
+          >
+            <div className="muted small">Latest snapshot change</div>
+            <div className={latestChange >= 0 ? "green statValue" : "red statValue"}>
+              {latestChange >= 0 ? "+" : ""}{formatCurrency(latestChange, currency)}
+              {previous > 0 ? ` (${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%)` : ""}
+            </div>
+          </button>
         </>
       )}
 
       {detailOpen && !hidden && (
         <div className="modalBg" onClick={() => setDetailOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 760 }}>
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 760,
+              maxHeight: "88vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch"
+            }}
+          >
             <div className="row">
               <div>
-                <h2>Net Worth Change Details</h2>
+                <h2>Net Worth Change</h2>
                 <p className="muted small" style={{ marginBottom: 0 }}>
                   Latest snapshot: {latestEntry?.date ? new Date(latestEntry.date).toLocaleString() : "—"}
                 </p>
@@ -1225,77 +1299,70 @@ function NetWorthChart({ timeline, currency, hidden }) {
 
             <div className="stats" style={{ marginTop: 12 }}>
               <Stat
-                label="From first snapshot"
-                value={`${change >= 0 ? "+" : ""}${formatCurrency(change, currency)}`}
-                sub={`${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%`}
-                good={change >= 0}
-              />
-              <Stat
-                label="From previous snapshot"
+                label="Since previous snapshot"
                 value={`${latestChange >= 0 ? "+" : ""}${formatCurrency(latestChange, currency)}`}
                 sub={previous > 0 ? `${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%` : "No previous total"}
                 good={latestChange >= 0}
+              />
+              <Stat
+                label="Since first snapshot"
+                value={`${change >= 0 ? "+" : ""}${formatCurrency(change, currency)}`}
+                sub={`${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%`}
+                good={change >= 0}
               />
               <Stat
                 label="Latest total"
                 value={formatCurrency(latest, currency)}
                 sub={`${latestAssets.length || "—"} assets in snapshot`}
               />
-              <Stat
-                label="Previous total"
-                value={formatCurrency(previous, currency)}
-                sub={previousEntry?.date ? new Date(previousEntry.date).toLocaleString() : "—"}
-              />
             </div>
 
-            <h3 style={{ marginTop: 18 }}>Change by asset type</h3>
-            <div className="table" style={{ marginTop: 8 }}>
-              <div className="tableHead">
-                <span>Asset Type</span><span>Current</span><span>Previous</span><span>Change</span><span></span>
-              </div>
-              {typeRows.map((row) => (
-                <div className="tableRow" key={row.type}>
-                  <span><b>{row.label}</b></span>
-                  <span>{formatCurrency(row.current, currency)}</span>
-                  <span>{formatCurrency(row.previous, currency)}</span>
-                  <span className={row.delta >= 0 ? "green" : "red"}>
-                    {row.delta >= 0 ? "+" : ""}{formatCurrency(row.delta, currency)}
-                  </span>
-                  <span></span>
-                </div>
-              ))}
-              {typeRows.length === 0 && <p className="muted">No breakdown data saved yet. Press Refresh once to create a detailed snapshot.</p>}
-            </div>
-
-            <h3 style={{ marginTop: 18 }}>Top asset contributors</h3>
+            <h3 style={{ marginTop: 18 }}>What changed?</h3>
             <p className="muted small">
-              This section is most detailed after your next Refresh because new snapshots save asset-level details.
+              Sorted by biggest impact. Tap a category to see the assets inside it.
             </p>
-            <div className="table" style={{ marginTop: 8 }}>
-              <div className="tableHead">
-                <span>Asset</span><span>Value</span><span>Change</span><span>Source</span><span></span>
-              </div>
-              {assetRows.slice(0, 12).map((row) => (
-                <div className="tableRow" key={row.id || `${row.name}-${row.ticker}`}>
-                  <span>
-                    <b>{row.name}</b>
-                    <div className="muted small">
-                      {TYPE_LABELS[row.asset_type] || row.asset_type}{row.ticker ? ` · ${row.ticker}` : ""}
-                    </div>
-                  </span>
-                  <span>{formatCurrency(row.current, currency)}</span>
-                  <span className={row.delta >= 0 ? "green" : "red"}>
-                    {row.delta >= 0 ? "+" : ""}{formatCurrency(row.delta, currency)}
-                  </span>
-                  <span className="muted small">{row.source || "Manual / saved"}</span>
-                  <span></span>
-                </div>
-              ))}
-              {assetRows.length === 0 && <p className="muted">No asset-level snapshot details yet. Press Refresh to save them.</p>}
+
+            <div style={{ marginTop: 10 }}>
+              {typeRows.map((row) => {
+                const isExpanded = expandedType === row.type;
+                const canExpand = row.assets.length > 0;
+                return (
+                  <div key={row.type}>
+                    <RowCard
+                      label={row.label}
+                      sub={`${row.assets.length} asset${row.assets.length === 1 ? "" : "s"}`}
+                      current={row.current}
+                      previous={row.previous}
+                      delta={row.delta}
+                      count={row.assets.length}
+                      expanded={isExpanded}
+                      onClick={() => canExpand && setExpandedType(isExpanded ? null : row.type)}
+                    />
+
+                    {isExpanded && (
+                      <div style={{ margin: "-2px 0 12px 16px", borderLeft: "2px solid var(--border)", paddingLeft: 12 }}>
+                        {row.assets.map((asset) => (
+                          <RowCard
+                            key={asset.id || `${asset.name}-${asset.ticker}`}
+                            label={asset.name}
+                            sub={`${asset.ticker || "No ticker"} · ${asset.source || "Manual / saved"}`}
+                            current={asset.current}
+                            previous={asset.previous}
+                            delta={asset.delta}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {typeRows.length === 0 && (
+                <p className="muted">No breakdown data saved yet. Press Refresh once to create a detailed snapshot.</p>
+              )}
             </div>
 
             <div className="muted small" style={{ marginTop: 14 }}>
-              Tip: this shows what changed between snapshots. It includes price changes, manual price edits, added assets, removed assets, deposits, and withdrawals.
+              This compares the latest snapshot with the previous snapshot. It includes price changes, manual price edits, added/removed assets, deposits, and withdrawals.
             </div>
           </div>
         </div>
