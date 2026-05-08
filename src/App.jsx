@@ -1048,11 +1048,56 @@ function NetWorthChart({ timeline, currency, hidden }) {
     return fx > 0 ? (Number(valueThb) || 0) / fx : 0;
   }
 
-  function cleanBreakdown(entry) {
-    const raw = entry?.breakdown || {};
-    return Object.fromEntries(
-      Object.entries(raw).filter(([key, value]) => !key.startsWith("__") && Number(value) > 0)
-    );
+  function entryDayKey(entry) {
+    if (!entry?.date) return "";
+    return new Date(entry.date).toLocaleDateString("en-CA");
+  }
+
+  function getReferenceEntry() {
+    if (timeline.length < 2) return null;
+
+    const latest = timeline[timeline.length - 1];
+    const latestDay = entryDayKey(latest);
+
+    // Prefer the newest snapshot from a previous calendar day.
+    // This prevents confusing tiny deltas when the user refreshes many times today.
+    for (let i = timeline.length - 2; i >= 0; i--) {
+      if (entryDayKey(timeline[i]) !== latestDay) return timeline[i];
+    }
+
+    // If there is no previous-day snapshot yet, use the immediately previous snapshot.
+    return timeline[timeline.length - 2] || null;
+  }
+
+  function getAssetKey(asset) {
+    return String(asset?.id || `${asset?.name || ""}-${asset?.ticker || ""}`);
+  }
+
+  function getAssetPrice(asset) {
+    const price = Number(asset?.price);
+    if (Number.isFinite(price) && price > 0) return price;
+
+    const qty = Number(asset?.quantity) || 0;
+    const valueThb = Number(asset?.currentValueThb) || 0;
+    const fx = getFxFromSnapshot(latestEntry);
+    const currencyOfPrice = asset?.priceCurrency || "THB";
+
+    if (qty > 0 && valueThb > 0) {
+      return currencyOfPrice === "USD" && fx > 0
+        ? valueThb / fx / qty
+        : valueThb / qty;
+    }
+
+    return 0;
+  }
+
+  function valueFromPriceThb(price, quantity, priceCurrency, fxEntry) {
+    const raw = (Number(price) || 0) * (Number(quantity) || 0);
+    if (priceCurrency === "USD") {
+      const fx = getFxFromSnapshot(fxEntry);
+      return raw * (fx || 1);
+    }
+    return raw;
   }
 
   const data = timeline.map((t) => ({
@@ -1066,96 +1111,141 @@ function NetWorthChart({ timeline, currency, hidden }) {
   }));
 
   const latestEntry = timeline[timeline.length - 1] || null;
-  const previousEntry = timeline[timeline.length - 2] || null;
-  const latest = getSnapshotValue(latestEntry);
-  const first = getSnapshotValue(timeline[0]);
-  const previous = getSnapshotValue(previousEntry);
-  const change = latest - first;
-  const changePct = first > 0 ? (change / first) * 100 : 0;
-  const latestChange = latest - previous;
-  const latestChangePct = previous > 0 ? (latestChange / previous) * 100 : 0;
+  const referenceEntry = getReferenceEntry();
+  const firstEntry = timeline[0] || null;
 
-  const latestBreakdown = cleanBreakdown(latestEntry);
-  const previousBreakdown = cleanBreakdown(previousEntry);
+  const latest = getSnapshotValue(latestEntry);
+  const referenceTotal = getSnapshotValue(referenceEntry);
+  const first = getSnapshotValue(firstEntry);
+
+  const totalChange = latest - referenceTotal;
+  const totalChangePct = referenceTotal > 0 ? (totalChange / referenceTotal) * 100 : 0;
+  const allTimeChange = latest - first;
+  const allTimeChangePct = first > 0 ? (allTimeChange / first) * 100 : 0;
 
   const latestAssets = latestEntry?.breakdown?.__assetDetails || [];
-  const previousAssets = previousEntry?.breakdown?.__assetDetails || [];
+  const referenceAssets = referenceEntry?.breakdown?.__assetDetails || [];
 
-  const latestAssetMap = new Map(
-    latestAssets.map((a) => [String(a.id || `${a.name}-${a.ticker}`), a])
-  );
-  const previousAssetMap = new Map(
-    previousAssets.map((a) => [String(a.id || `${a.name}-${a.ticker}`), a])
+  const referenceAssetMap = new Map(
+    referenceAssets.map((a) => [getAssetKey(a), a])
   );
 
-  const assetRows = Array.from(new Set([...latestAssetMap.keys(), ...previousAssetMap.keys()]))
-    .map((key) => {
-      const asset = latestAssetMap.get(key) || previousAssetMap.get(key) || {};
-      const prev = previousAssetMap.get(key) || {};
-      const currentThb = Number(asset.currentValueThb) || 0;
-      const previousThb = Number(prev.currentValueThb) || 0;
-      const deltaThb = currentThb - previousThb;
+  const assetRows = latestAssets
+    .map((asset) => {
+      const key = getAssetKey(asset);
+      const previous = referenceAssetMap.get(key) || null;
+
+      const quantity = Number(asset.quantity) || 0;
+      const currentPrice = getAssetPrice(asset);
+      const previousPrice = previous ? getAssetPrice(previous) : currentPrice;
+      const priceCurrency = asset.priceCurrency || previous?.priceCurrency || "THB";
+
+      // For market/unit assets, compare current price with the previous stored/reference price,
+      // then apply the latest quantity. New assets without a previous price show +0 change.
+      let currentValueThb = Number(asset.currentValueThb) || 0;
+      let previousValueThb = previous
+        ? valueFromPriceThb(previousPrice, quantity, priceCurrency, latestEntry)
+        : currentValueThb;
+
+      // For value-only assets where price/quantity are not meaningful, compare total saved value.
+      const unitTracked = quantity > 0 && currentPrice > 0;
+      if (!unitTracked) {
+        previousValueThb = previous
+          ? Number(previous.currentValueThb) || 0
+          : currentValueThb;
+      }
+
+      const deltaThb = currentValueThb - previousValueThb;
+      const currentDisplay = convertSnapshotThb(currentValueThb, latestEntry);
+      const previousDisplay = convertSnapshotThb(previousValueThb, latestEntry);
+      const deltaDisplay = convertSnapshotThb(deltaThb, latestEntry);
+
+      const priceDelta = currentPrice - previousPrice;
+      const priceDeltaPct = previousPrice > 0 ? (priceDelta / previousPrice) * 100 : 0;
 
       return {
         ...asset,
-        id: asset.id || prev.id || key,
-        name: asset.name || prev.name || "Unnamed asset",
-        ticker: asset.ticker || prev.ticker || "",
-        asset_type: asset.asset_type || prev.asset_type || "other",
-        source: asset.source || prev.source || "Manual / saved",
-        current: convertSnapshotThb(currentThb, latestEntry),
-        previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
-        delta: convertSnapshotThb(deltaThb, latestEntry)
+        id: asset.id || key,
+        name: asset.name || "Unnamed asset",
+        ticker: asset.ticker || "",
+        asset_type: asset.asset_type || "other",
+        source: asset.source || "Manual / saved",
+        quantity,
+        priceCurrency,
+        currentPrice,
+        previousPrice,
+        priceDelta,
+        priceDeltaPct,
+        current: currentDisplay,
+        previous: previousDisplay,
+        delta: deltaDisplay,
+        isNew: !previous
       };
     })
     .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0 || Math.abs(row.delta) > 0)
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
-  const typeRows = Array.from(
-    new Set([...Object.keys(latestBreakdown), ...Object.keys(previousBreakdown), ...assetRows.map((a) => a.asset_type)])
-  )
+  const typeRows = Array.from(new Set(assetRows.map((a) => a.asset_type)))
     .map((type) => {
-      const currentThb = Number(latestBreakdown[type]) || 0;
-      const previousThb = Number(previousBreakdown[type]) || 0;
-      const deltaThb = currentThb - previousThb;
       const assetsInType = assetRows.filter((a) => a.asset_type === type);
+      const current = assetsInType.reduce((sum, a) => sum + (Number(a.current) || 0), 0);
+      const previous = assetsInType.reduce((sum, a) => sum + (Number(a.previous) || 0), 0);
+      const delta = assetsInType.reduce((sum, a) => sum + (Number(a.delta) || 0), 0);
 
       return {
         type,
         label: TYPE_LABELS[type] || type,
-        current: convertSnapshotThb(currentThb, latestEntry),
-        previous: convertSnapshotThb(previousThb, previousEntry || latestEntry),
-        delta: convertSnapshotThb(deltaThb, latestEntry),
+        current,
+        previous,
+        delta,
         assets: assetsInType
       };
     })
     .filter((row) => Math.abs(row.current) > 0 || Math.abs(row.previous) > 0 || Math.abs(row.delta) > 0)
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
-  function RowCard({ label, sub, current, previous, delta, onClick, expanded, count }) {
-    const positive = delta >= 0;
+  function PriceLine({ asset }) {
+    if (!asset.currentPrice) return null;
+
+    const sign = asset.priceDelta >= 0 ? "+" : "";
+    const currencyLabel = asset.priceCurrency || "THB";
+
     return (
-      <button
-        type="button"
-        className="ghost"
-        onClick={onClick}
-        style={{
-          width: "100%",
-          textAlign: "left",
-          padding: 14,
-          borderRadius: 18,
-          border: "1px solid var(--border)",
-          background: "var(--card)",
-          marginBottom: 10,
-          display: "block"
-        }}
-      >
+      <div className="muted small" style={{ marginTop: 4 }}>
+        Price: {Number(asset.currentPrice).toLocaleString(undefined, { maximumFractionDigits: 4 })} {currencyLabel}
+        {asset.previousPrice > 0 && (
+          <>
+            {" · Prev: "}
+            {Number(asset.previousPrice).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+            {" · "}
+            <span className={asset.priceDelta >= 0 ? "green" : "red"}>
+              {sign}{asset.priceDelta.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+              {asset.previousPrice > 0 ? ` (${sign}${asset.priceDeltaPct.toFixed(2)}%)` : ""}
+            </span>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function RowCard({ label, sub, current, previous, delta, onClick, expanded, count, asset }) {
+    const positive = delta >= 0;
+    const clickable = typeof onClick === "function";
+
+    const body = (
+      <>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {label}
             </div>
             {sub && <div className="muted small" style={{ marginTop: 3 }}>{sub}</div>}
+            {asset && <PriceLine asset={asset} />}
+            {asset?.isNew && (
+              <div className="muted small" style={{ marginTop: 4 }}>
+                New/no previous reference price → change shown as +0
+              </div>
+            )}
             {count > 0 && (
               <div className="muted small" style={{ marginTop: 4 }}>
                 {expanded ? "Tap to collapse" : `Tap to view ${count} asset${count === 1 ? "" : "s"}`}
@@ -1168,11 +1258,32 @@ function NetWorthChart({ timeline, currency, hidden }) {
               {positive ? "+" : ""}{formatCurrency(delta, currency)}
             </div>
             <div className="muted small">Now {formatCurrency(current, currency)}</div>
-            {previous > 0 && <div className="muted small">Before {formatCurrency(previous, currency)}</div>}
+            {previous > 0 && <div className="muted small">Ref {formatCurrency(previous, currency)}</div>}
           </div>
         </div>
-      </button>
+      </>
     );
+
+    const style = {
+      width: "100%",
+      textAlign: "left",
+      padding: 14,
+      borderRadius: 18,
+      border: "1px solid var(--border)",
+      background: "var(--card)",
+      marginBottom: 10,
+      display: "block"
+    };
+
+    if (clickable) {
+      return (
+        <button type="button" className="ghost" onClick={onClick} style={style}>
+          {body}
+        </button>
+      );
+    }
+
+    return <div style={style}>{body}</div>;
   }
 
   return (
@@ -1190,13 +1301,13 @@ function NetWorthChart({ timeline, currency, hidden }) {
             className="ghost"
             onClick={() => setDetailOpen(true)}
             style={{ textAlign: "right", padding: 8, borderRadius: 14 }}
-            title="Tap to see what caused the portfolio change"
+            title="Tap to see what changed vs the previous reference snapshot"
           >
-            <div className={change >= 0 ? "green statValue" : "red statValue"}>
-              {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
+            <div className={totalChange >= 0 ? "green statValue" : "red statValue"}>
+              {totalChange >= 0 ? "+" : ""}{formatCurrency(totalChange, currency)}
             </div>
             <div className="muted small">
-              {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap for details
+              {referenceEntry ? `vs ${new Date(referenceEntry.date).toLocaleDateString()}` : "tap for details"}
             </div>
           </button>
         )}
@@ -1266,10 +1377,13 @@ function NetWorthChart({ timeline, currency, hidden }) {
             onClick={() => setDetailOpen(true)}
             style={{ marginTop: 10, width: "100%", textAlign: "left", padding: 10, borderRadius: 14 }}
           >
-            <div className="muted small">Latest snapshot change</div>
-            <div className={latestChange >= 0 ? "green statValue" : "red statValue"}>
-              {latestChange >= 0 ? "+" : ""}{formatCurrency(latestChange, currency)}
-              {previous > 0 ? ` (${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%)` : ""}
+            <div className="muted small">Reference change</div>
+            <div className={totalChange >= 0 ? "green statValue" : "red statValue"}>
+              {totalChange >= 0 ? "+" : ""}{formatCurrency(totalChange, currency)}
+              {referenceTotal > 0 ? ` (${totalChange >= 0 ? "+" : ""}${totalChangePct.toFixed(2)}%)` : ""}
+            </div>
+            <div className="muted small">
+              Compared with {referenceEntry?.date ? new Date(referenceEntry.date).toLocaleString() : "previous snapshot"}
             </div>
           </button>
         </>
@@ -1289,9 +1403,10 @@ function NetWorthChart({ timeline, currency, hidden }) {
           >
             <div className="row">
               <div>
-                <h2>Net Worth Change</h2>
+                <h2>What Changed?</h2>
                 <p className="muted small" style={{ marginBottom: 0 }}>
-                  Latest snapshot: {latestEntry?.date ? new Date(latestEntry.date).toLocaleString() : "—"}
+                  Now: {latestEntry?.date ? new Date(latestEntry.date).toLocaleString() : "—"}
+                  {referenceEntry?.date ? ` · Ref: ${new Date(referenceEntry.date).toLocaleString()}` : ""}
                 </p>
               </div>
               <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>✕</button>
@@ -1299,16 +1414,16 @@ function NetWorthChart({ timeline, currency, hidden }) {
 
             <div className="stats" style={{ marginTop: 12 }}>
               <Stat
-                label="Since previous snapshot"
-                value={`${latestChange >= 0 ? "+" : ""}${formatCurrency(latestChange, currency)}`}
-                sub={previous > 0 ? `${latestChange >= 0 ? "+" : ""}${latestChangePct.toFixed(2)}%` : "No previous total"}
-                good={latestChange >= 0}
+                label="Reference change"
+                value={`${totalChange >= 0 ? "+" : ""}${formatCurrency(totalChange, currency)}`}
+                sub={referenceTotal > 0 ? `${totalChange >= 0 ? "+" : ""}${totalChangePct.toFixed(2)}%` : "No reference total"}
+                good={totalChange >= 0}
               />
               <Stat
                 label="Since first snapshot"
-                value={`${change >= 0 ? "+" : ""}${formatCurrency(change, currency)}`}
-                sub={`${change >= 0 ? "+" : ""}${changePct.toFixed(2)}%`}
-                good={change >= 0}
+                value={`${allTimeChange >= 0 ? "+" : ""}${formatCurrency(allTimeChange, currency)}`}
+                sub={`${allTimeChange >= 0 ? "+" : ""}${allTimeChangePct.toFixed(2)}%`}
+                good={allTimeChange >= 0}
               />
               <Stat
                 label="Latest total"
@@ -1317,9 +1432,9 @@ function NetWorthChart({ timeline, currency, hidden }) {
               />
             </div>
 
-            <h3 style={{ marginTop: 18 }}>What changed?</h3>
+            <h3 style={{ marginTop: 18 }}>Asset type breakdown</h3>
             <p className="muted small">
-              Sorted by biggest impact. Tap a category to see the assets inside it.
+              Compares each asset's current price with the previous-day/reference price. New assets show +0 until they have a reference.
             </p>
 
             <div style={{ marginTop: 10 }}>
@@ -1349,6 +1464,7 @@ function NetWorthChart({ timeline, currency, hidden }) {
                             current={asset.current}
                             previous={asset.previous}
                             delta={asset.delta}
+                            asset={asset}
                           />
                         ))}
                       </div>
@@ -1357,12 +1473,12 @@ function NetWorthChart({ timeline, currency, hidden }) {
                 );
               })}
               {typeRows.length === 0 && (
-                <p className="muted">No breakdown data saved yet. Press Refresh once to create a detailed snapshot.</p>
+                <p className="muted">No detailed reference data yet. Press Refresh once to create a detailed snapshot.</p>
               )}
             </div>
 
             <div className="muted small" style={{ marginTop: 14 }}>
-              This compares the latest snapshot with the previous snapshot. It includes price changes, manual price edits, added/removed assets, deposits, and withdrawals.
+              Auto assets compare with the previous-day/reference snapshot. Manual stock/fund assets compare your current typed price with the previous stored typed price.
             </div>
           </div>
         </div>
