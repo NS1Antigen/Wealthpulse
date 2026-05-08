@@ -1589,7 +1589,16 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
   const hasTodayChange = !!deltaData && !deltaData.isNew;
   const priceTimestamp = getPriceTimestamp(asset, priceData);
   const staleWarning = getStaleWarning(asset, priceData);
-  const movementLabel = deltaData?.baselineLabel || (isManualPriceAsset(asset.asset_type) ? "Since previous entered price" : "Today");
+  const isManual = isManualPriceAsset(asset.asset_type);
+  const movementLabel = isManual ? "Prev price" : "Today";
+  const compactTimestamp = priceTimestamp
+    ? new Date(priceTimestamp).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      })
+    : null;
 
   function deleteTransaction(txId) {
     if (!confirm("Delete this transaction?")) return;
@@ -1616,26 +1625,91 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
   }
 
   return (
-    <div className="assetItem">
+    <div className="assetItem" style={{ alignItems: "stretch", gap: 12 }}>
       <div className="assetIcon"><Icon size={19} /></div>
 
-      <div className="assetMain">
-        <div className="assetName">{asset.name}</div>
-        <div className="muted small">
-          {TYPE_LABELS[asset.asset_type] || asset.asset_type}
-          {asset.ticker ? ` · ${asset.ticker}` : ""}
-          {` · ${allocationPct.toFixed(1)}% of portfolio`}
-          {asset.quantity && asset.asset_type !== "cash" ? ` · ${asset.quantity} units` : ""}
-          {asset.asset_type === "cash" ? " · THB/USD account" : ""}
-          {priceData ? ` · ${priceData.source}` : ""}
+      <div className="assetMain" style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div className="assetName" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {asset.name}
+            </div>
+            <div className="muted small" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {TYPE_LABELS[asset.asset_type] || asset.asset_type}
+              {asset.ticker ? ` · ${asset.ticker}` : ""}
+              {` · ${allocationPct.toFixed(1)}%`}
+              {asset.quantity && asset.asset_type !== "cash" ? ` · ${asset.quantity} units` : ""}
+              {asset.asset_type === "cash" ? " · THB/USD" : ""}
+            </div>
+          </div>
         </div>
 
-        {asset.asset_type !== "cash" && asset.cost_incomplete && (
-          <div className="red small">Cost incomplete: some buy price missing</div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+            gap: 8,
+            marginTop: 10
+          }}
+        >
+          <div
+            style={{
+              padding: "8px 10px",
+              borderRadius: 14,
+              background: "color-mix(in srgb, var(--muted) 9%, transparent)",
+              border: "1px solid var(--border)"
+            }}
+          >
+            <div className="muted small" style={{ marginBottom: 2 }}>Since buy</div>
+            {pnlPct !== null && !hidden ? (
+              <div className={pnl >= 0 ? "green" : "red"} style={{ fontWeight: 850, fontSize: 14 }}>
+                {pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
+              </div>
+            ) : (
+              <div className="muted" style={{ fontWeight: 850, fontSize: 14 }}>—</div>
+            )}
+          </div>
+
+          <div
+            style={{
+              padding: "8px 10px",
+              borderRadius: 14,
+              background: todayChangeThb >= 0
+                ? "color-mix(in srgb, #22c55e 10%, transparent)"
+                : "color-mix(in srgb, #ef4444 10%, transparent)",
+              border: todayChangeThb >= 0
+                ? "1px solid color-mix(in srgb, #22c55e 30%, var(--border))"
+                : "1px solid color-mix(in srgb, #ef4444 30%, var(--border))"
+            }}
+          >
+            <div className="muted small" style={{ marginBottom: 2 }}>{movementLabel}</div>
+            {!hidden && hasTodayChange ? (
+              <div className={todayChangeThb >= 0 ? "green" : "red"} style={{ fontWeight: 850, fontSize: 14 }}>
+                {todayChangeThb >= 0 ? "+" : ""}{todayChangePct.toFixed(2)}%
+              </div>
+            ) : (
+              <div className="muted" style={{ fontWeight: 850, fontSize: 14 }}>new</div>
+            )}
+          </div>
+        </div>
+
+        {!hidden && hasTodayChange && (
+          <div className={todayChangeThb >= 0 ? "green small" : "red small"} style={{ marginTop: 6, fontWeight: 700 }}>
+            {movementLabel} move: {todayChangeThb >= 0 ? "+" : ""}{formatCurrency(todayChangeValue, currency)}
+          </div>
         )}
 
+        <div className="muted small" style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {compactTimestamp && <span>Updated {compactTimestamp}</span>}
+          {priceData?.source && <span>· {priceData.source}</span>}
+          {staleWarning && <span className="red" style={{ fontWeight: 750 }}>· {staleWarning}</span>}
+          {asset.asset_type !== "cash" && asset.cost_incomplete && (
+            <span className="red" style={{ fontWeight: 750 }}>· Cost incomplete</span>
+          )}
+        </div>
+
         {asset.transactions?.length > 0 && (
-          <button className="ghost" onClick={() => setShowTx(!showTx)}>
+          <button className="ghost" onClick={() => setShowTx(!showTx)} style={{ marginTop: 6 }}>
             {showTx ? "Hide" : "Show"} transactions ({asset.transactions.length})
           </button>
         )}
@@ -1669,30 +1743,12 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
         )}
       </div>
 
-      <div className="assetValue">
+      <div className="assetValue" style={{ minWidth: 120 }}>
         <b>{hidden ? "••••••" : formatCurrency(asset.currentValue || 0, currency)}</b>
-
         {pnlPct !== null && !hidden && (
-          <span className={pnl >= 0 ? "green" : "red"}>
-            Since buy: {pnl >= 0 ? "+" : ""}
-            {formatCurrency(pnl, currency)} ({pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
+          <span className={pnl >= 0 ? "green" : "red"} style={{ fontWeight: 750 }}>
+            {pnl >= 0 ? "+" : ""}{formatCurrency(pnl, currency)}
           </span>
-        )}
-
-        {!hidden && (
-          <span className={todayChangeThb >= 0 ? "green" : "red"}>
-            {movementLabel}: {hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${formatCurrency(todayChangeValue, currency)} (${todayChangeThb >= 0 ? "+" : ""}${todayChangePct.toFixed(2)}%)` : "new baseline"}
-          </span>
-        )}
-
-        {priceTimestamp && (
-          <span className="muted small">
-            Price updated: {new Date(priceTimestamp).toLocaleString()}
-          </span>
-        )}
-
-        {staleWarning && (
-          <span className="red small">{staleWarning}</span>
         )}
       </div>
 
