@@ -85,6 +85,29 @@ const MUTUAL_FUND_DATABASE = [
   { symbol: "TMBUS500", name: "TMB US500 Equity Index Fund", amc: "Eastspring" }
 ];
 
+const TRADINGVIEW_STOCK_DATABASE = [
+  { symbol: "SET:PTT", name: "PTT", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:AOT", name: "Airports of Thailand", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:CPALL", name: "CP All", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:KBANK", name: "Kasikornbank", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:SCB", name: "SCB X", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:ADVANC", name: "AIS Advanced Info Service", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:BDMS", name: "Bangkok Dusit Medical Services", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:DELTA", name: "Delta Electronics Thailand", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+  { symbol: "SET:LH", name: "Land and Houses", asset_type: "thai_stock", exchange: "SET", currency: "THB" },
+
+  { symbol: "NASDAQ:META", name: "Meta Platforms", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "NASDAQ:ASTS", name: "AST SpaceMobile", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "NASDAQ:AAPL", name: "Apple", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "NASDAQ:NVDA", name: "Nvidia", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "NASDAQ:MSFT", name: "Microsoft", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "NASDAQ:GOOGL", name: "Google / Alphabet", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "NASDAQ:TSLA", name: "Tesla", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" },
+  { symbol: "AMEX:SPY", name: "SPDR S&P 500 ETF", asset_type: "international_stock", exchange: "AMEX", currency: "USD" },
+  { symbol: "AMEX:VOO", name: "Vanguard S&P 500 ETF", asset_type: "international_stock", exchange: "AMEX", currency: "USD" },
+  { symbol: "NASDAQ:QQQ", name: "Nasdaq 100 ETF", asset_type: "international_stock", exchange: "NASDAQ", currency: "USD" }
+];
+
 const TYPE_LABELS = Object.fromEntries(
   ASSET_TYPES.map((a) => [a.value, a.label.replace(/^.. /, "")])
 );
@@ -124,6 +147,43 @@ function normalizeSymbol(value) {
 function isScbSp500Fund(symbol) {
   const s = normalizeSymbol(symbol);
   return s === "SCBS&P500" || s === "SCBSP500";
+}
+
+function getTradingViewSymbol(ticker, assetType) {
+  const raw = String(ticker || "").trim().toUpperCase();
+  if (!raw) return "";
+
+  if (raw.includes(":")) return raw;
+
+  if (assetType === "thai_stock") {
+    return `SET:${raw.replace(/\.BK$/, "")}`;
+  }
+
+  if (assetType === "international_stock") {
+    const known = TRADINGVIEW_STOCK_DATABASE.find((item) => {
+      const shortSymbol = item.symbol.split(":").pop();
+      return item.asset_type === "international_stock" && shortSymbol === raw;
+    });
+
+    return known?.symbol || `NASDAQ:${raw}`;
+  }
+
+  return raw;
+}
+
+function openTradingViewChart(ticker, assetType) {
+  const symbol = getTradingViewSymbol(ticker, assetType);
+
+  if (!symbol) {
+    alert("Please enter a ticker symbol first.");
+    return;
+  }
+
+  window.open(
+    `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symbol)}`,
+    "_blank",
+    "noopener,noreferrer"
+  );
 }
 
 function needsLiveTicker(type) {
@@ -1195,24 +1255,26 @@ function SearchAssetPage({ onAdd }) {
     { symbol: "ADA", name: "Cardano", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
     { symbol: "DOGE", name: "Dogecoin", asset_type: "crypto_other", source: "CoinGecko", currency: "USD" },
 
-    { symbol: "AAPL", name: "Apple", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "NVDA", name: "Nvidia", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "MSFT", name: "Microsoft", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "GOOGL", name: "Google / Alphabet", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "TSLA", name: "Tesla", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "SPY", name: "S&P 500 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "VOO", name: "Vanguard S&P 500 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
-    { symbol: "QQQ", name: "Nasdaq 100 ETF", asset_type: "international_stock", source: "Market API", currency: "USD" },
+    { symbol: "NASDAQ:AAPL", name: "Apple", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:NVDA", name: "Nvidia", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:MSFT", name: "Microsoft", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:GOOGL", name: "Google / Alphabet", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:TSLA", name: "Tesla", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "AMEX:SPY", name: "S&P 500 ETF", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "AMEX:VOO", name: "Vanguard S&P 500 ETF", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:QQQ", name: "Nasdaq 100 ETF", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:META", name: "Meta Platforms", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
+    { symbol: "NASDAQ:ASTS", name: "AST SpaceMobile", asset_type: "international_stock", source: "TradingView reference + Manual Price", currency: "USD" },
 
-    { symbol: "PTT.BK", name: "PTT", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "LH.BK", name: "Land and Houses", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "AOT.BK", name: "Airports of Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "CPALL.BK", name: "CP All", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "KBANK.BK", name: "Kasikornbank", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "SCB.BK", name: "SCB X", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "ADVANC.BK", name: "AIS Advanced Info Service", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "BDMS.BK", name: "Bangkok Dusit Medical Services", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
-    { symbol: "DELTA.BK", name: "Delta Electronics Thailand", asset_type: "thai_stock", source: "SET/Yahoo", currency: "THB" },
+    { symbol: "SET:PTT", name: "PTT", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:LH", name: "Land and Houses", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:AOT", name: "Airports of Thailand", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:CPALL", name: "CP All", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:KBANK", name: "Kasikornbank", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:SCB", name: "SCB X", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:ADVANC", name: "AIS Advanced Info Service", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:BDMS", name: "Bangkok Dusit Medical Services", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
+    { symbol: "SET:DELTA", name: "Delta Electronics Thailand", asset_type: "thai_stock", source: "TradingView reference + Manual Price", currency: "THB" },
 
     { symbol: "SCBS&P500", name: "SCB S&P 500 Fund", asset_type: "mutual_fund", source: "Estimated NAV: IVV close × USD/THB", currency: "THB" },
     { symbol: "SCBNDQ", name: "SCB Nasdaq 100 Fund", asset_type: "mutual_fund", source: "Manual NAV", currency: "THB" },
@@ -1421,7 +1483,30 @@ function Security({ theme, setTheme, refreshAssets, setAssets, setTimeline, setU
 }
 
 async function searchTickerSuggestions(query, assetType) {
-  const q = String(query || "").trim();
+  const q = String(query || "").trim().toLowerCase();
+
+  if (assetType === "thai_stock" || assetType === "international_stock") {
+    const localResults = TRADINGVIEW_STOCK_DATABASE
+      .filter((item) => item.asset_type === assetType)
+      .filter((item) => {
+        if (!q) return true;
+        return (
+          item.symbol.toLowerCase().includes(q) ||
+          item.name.toLowerCase().includes(q) ||
+          item.exchange.toLowerCase().includes(q)
+        );
+      })
+      .map((item) => ({
+        symbol: item.symbol,
+        name: item.name,
+        exchange: `${item.exchange} · TradingView`,
+        currency: item.currency
+      }))
+      .slice(0, 8);
+
+    if (localResults.length > 0 || q.length < 2) return localResults;
+  }
+
   if (q.length < 2) return [];
 
   try {
@@ -1434,16 +1519,25 @@ async function searchTickerSuggestions(query, assetType) {
     const data = await res.json();
 
     return (data.quotes || [])
-      .filter((item) => item.symbol && item.shortname)
-      .map((item) => ({
-        symbol: item.symbol,
-        name: item.shortname || item.longname || item.symbol,
-        exchange: item.exchange || "",
-        type: item.quoteType || "",
-      }))
+      .filter((item) => item.symbol && (item.shortname || item.longname))
+      .map((item) => {
+        const yahooSymbol = String(item.symbol || "").toUpperCase();
+        const isThai = yahooSymbol.endsWith(".BK");
+        const tvSymbol = isThai
+          ? `SET:${yahooSymbol.replace(/\.BK$/, "")}`
+          : getTradingViewSymbol(yahooSymbol, "international_stock");
+
+        return {
+          symbol: tvSymbol,
+          name: item.shortname || item.longname || tvSymbol,
+          exchange: isThai ? "SET · TradingView" : `${item.exchange || "US"} · TradingView`,
+          type: item.quoteType || "",
+          currency: isThai ? "THB" : "USD"
+        };
+      })
       .filter((item) => {
-        if (assetType === "thai_stock") return item.symbol.endsWith(".BK");
-        if (assetType === "international_stock") return !item.symbol.endsWith(".BK");
+        if (assetType === "thai_stock") return item.symbol.startsWith("SET:");
+        if (assetType === "international_stock") return !item.symbol.startsWith("SET:");
         return true;
       })
       .slice(0, 8);
@@ -1508,6 +1602,16 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         return;
       }
 
+      if (form.asset_type === "thai_stock" || form.asset_type === "international_stock") {
+        setSearchingTicker(q.length >= 2);
+        const results = await searchTickerSuggestions(q, form.asset_type);
+        if (!cancelled) {
+          setTickerSuggestions(results);
+          setSearchingTicker(false);
+        }
+        return;
+      }
+
       if (q.length < 2) {
         setTickerSuggestions([]);
         return;
@@ -1518,7 +1622,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
         return;
       }
 
-      if (form.asset_type === "thai_stock" || form.asset_type === "international_stock" || form.asset_type === "crypto_other") {
+      if (form.asset_type === "crypto_other") {
         setSearchingTicker(true);
         const results = await searchTickerSuggestions(q, form.asset_type);
         if (!cancelled) {
@@ -1724,7 +1828,7 @@ function AssetForm({ editingAsset, onClose, onSave }) {
             <label>{form.asset_type === "mutual_fund" ? "Fund Code / Ticker" : needsLiveTicker(form.asset_type) ? "Live Ticker Symbol" : "Symbol / Fund Code"}</label>
             <input
               value={form.ticker}
-              onFocus={() => {
+              onFocus={async () => {
                 if (form.asset_type === "mutual_fund") {
                   setTickerSuggestions(
                     MUTUAL_FUND_DATABASE.map((fund) => ({
@@ -1733,15 +1837,18 @@ function AssetForm({ editingAsset, onClose, onSave }) {
                       exchange: "Thai Mutual Fund"
                     }))
                   );
+                } else if (form.asset_type === "thai_stock" || form.asset_type === "international_stock") {
+                  const results = await searchTickerSuggestions(form.ticker, form.asset_type);
+                  setTickerSuggestions(results);
                 }
               }}
               onChange={(e) => set("ticker", e.target.value.toUpperCase())}
               placeholder={
                 form.asset_type === "bitcoin" ? "BTC" :
                 form.asset_type === "thai_gold" ? "THAI-GOLD" :
-                form.asset_type === "thai_stock" ? "Example: PTT.BK or PTT" :
+                form.asset_type === "thai_stock" ? "Example: SET:PTT" :
                 form.asset_type === "mutual_fund" ? "Example: SCBS&P500" :
-                "Example: AAPL, VOO, ETH"
+                form.asset_type === "international_stock" ? "Example: NASDAQ:META or NASDAQ:ASTS" : "Example: ETH"
               }
             />
 
@@ -1825,6 +1932,23 @@ function AssetForm({ editingAsset, onClose, onSave }) {
                 "Use for property/manual fallback"
               }
             />
+
+            {(form.asset_type === "thai_stock" || form.asset_type === "international_stock") && (
+              <div className="infoBox" style={{ marginTop: 10 }}>
+                <b>TradingView reference + manual price</b>
+                <div className="muted small">
+                  Open the TradingView chart, check the current/last price, then manually type the price above. The app will use your saved manual price for portfolio value.
+                </div>
+                <button
+                  type="button"
+                  className="outline"
+                  style={{ marginTop: 10 }}
+                  onClick={() => openTradingViewChart(form.ticker, form.asset_type)}
+                >
+                  Open TradingView Chart
+                </button>
+              </div>
+            )}
           </>
         )}
 
