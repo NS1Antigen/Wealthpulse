@@ -404,8 +404,7 @@ function safeLoadJson(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
-  } catch (err) {
-    console.warn("Failed to read localStorage:", key, err);
+  } catch {
     return fallback;
   }
 }
@@ -414,7 +413,7 @@ function safeSaveJson(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (err) {
-    console.warn("Failed to save localStorage:", key, err);
+    console.warn("Snapshot save failed:", key, err);
   }
 }
 
@@ -422,20 +421,20 @@ function makeAssetSnapshotKey(asset) {
   return String(asset?.id || `${asset?.asset_type || "asset"}-${asset?.ticker || asset?.name || ""}`);
 }
 
-function getLatestAssetDeltas() {
+function loadLatestAssetDeltas() {
   const saved = safeLoadJson(ASSET_DELTA_KEY, { items: [] });
   return Array.isArray(saved?.items) ? saved.items : [];
 }
 
-function buildAndSaveAssetDeltas(assetsWithValues) {
+function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
   const previousSnapshot = safeLoadJson(ASSET_VALUE_SNAPSHOT_KEY, {});
   const nextSnapshot = {};
   const now = new Date().toISOString();
 
-  const items = (assetsWithValues || []).map((asset) => {
+  const items = (assetsWithCurrentValues || []).map((asset) => {
     const key = makeAssetSnapshotKey(asset);
-    const quantity = safeNumber(asset.quantity);
     const currentValueThb = safeNumber(asset.currentValueThb);
+    const quantity = safeNumber(asset.quantity);
     const currentUnitPriceThb =
       quantity > 0 && asset.asset_type !== "cash"
         ? currentValueThb / quantity
@@ -453,7 +452,9 @@ function buildAndSaveAssetDeltas(assetsWithValues) {
     const unitChangeThb =
       previousUnitPriceThb === null ? 0 : currentUnitPriceThb - previousUnitPriceThb;
     const changePct =
-      previousValueThb && previousValueThb > 0 ? (changeThb / previousValueThb) * 100 : 0;
+      previousValueThb && previousValueThb > 0
+        ? (changeThb / previousValueThb) * 100
+        : 0;
 
     nextSnapshot[key] = {
       id: asset.id,
@@ -507,7 +508,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [modalAsset, setModalAsset] = useState(null);
   const [timeline, setTimeline] = useState(getTimeline());
-  const [assetDeltas, setAssetDeltas] = useState(getLatestAssetDeltas());
+  const [assetDeltas, setAssetDeltas] = useState(loadLatestAssetDeltas());
   const [unlocked, setUnlocked] = useState(!hasPinSet());
 
   useEffect(() => {
@@ -1144,22 +1145,23 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
   const changePct = first > 0 ? (change / first) * 100 : 0;
   const safeUsdToThb = Number(usdToThb) || 1;
 
-  function convertFromThb(valueThb) {
+  function fromThb(valueThb) {
     return currency === "USD" ? valueThb / safeUsdToThb : valueThb;
   }
 
   function moneyFromThb(valueThb) {
-    return formatCurrency(convertFromThb(valueThb), currency);
+    return formatCurrency(fromThb(Number(valueThb) || 0), currency);
   }
 
   function signedMoneyFromThb(valueThb) {
-    const sign = Number(valueThb) >= 0 ? "+" : "";
-    return `${sign}${moneyFromThb(valueThb)}`;
+    const n = Number(valueThb) || 0;
+    return `${n >= 0 ? "+" : ""}${moneyFromThb(n)}`;
   }
 
   const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
   const grouped = cleanItems.reduce((acc, item) => {
     const type = item.asset_type || "other";
+
     if (!acc[type]) {
       acc[type] = {
         type,
@@ -1169,6 +1171,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         items: []
       };
     }
+
     acc[type].currentValueThb += Number(item.currentValueThb) || 0;
     acc[type].changeThb += Number(item.changeThb) || 0;
     acc[type].items.push(item);
@@ -1291,7 +1294,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               <div>
                 <h2>What changed?</h2>
                 <p className="muted small" style={{ marginTop: 4 }}>
-                  Compared with the previous stored price/value snapshot. New assets show +0 first.
+                  Compared with the previous stored asset value. New assets show +0 first.
                 </p>
               </div>
               <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>
