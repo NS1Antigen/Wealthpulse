@@ -1379,18 +1379,127 @@ function Stat({ label, value, sub, good, warn }) {
 function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb }) {
   const [detailOpen, setDetailOpen] = useState(false);
   const [expandedTypes, setExpandedTypes] = useState({});
-
-  const data = timeline.map((t) => ({
-    date: t.date,
-    displayDate: new Date(t.date).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric"
-    }),
-    value: currency === "THB" ? t.totalThb : t.totalUsd
-  }));
+  const [range, setRange] = useState("1M");
+  const [selectedPoint, setSelectedPoint] = useState(null);
 
   const safeUsdToThb = Number(usdToThb) || 1;
   const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
+
+  const dailyTimelinePoints = useMemo(() => {
+    const byDate = {};
+
+    (Array.isArray(timeline) ? timeline : []).forEach((t) => {
+      const parsedDate = new Date(t.date);
+      if (Number.isNaN(parsedDate.getTime())) return;
+
+      const dateKey = getLocalDateKey(parsedDate);
+      const totalThb = Number(t.totalThb) || 0;
+      const totalUsd = Number(t.totalUsd) || 0;
+      if (!totalThb && !totalUsd) return;
+
+      const existing = byDate[dateKey];
+      if (!existing || parsedDate.getTime() >= existing.timestampMs) {
+        byDate[dateKey] = {
+          dateKey,
+          date: t.date,
+          timestampMs: parsedDate.getTime(),
+          displayDate: parsedDate.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+          fullDate: parsedDate.toLocaleString(),
+          totalThb,
+          totalUsd,
+          breakdown: t.breakdown || {}
+        };
+      }
+    });
+
+    const points = Object.values(byDate).sort((a, b) => a.timestampMs - b.timestampMs);
+
+    return points.map((point, index) => {
+      const previous = index > 0 ? points[index - 1] : null;
+      const changeThb = previous ? point.totalThb - previous.totalThb : 0;
+      const previousTotalThb = previous ? previous.totalThb : 0;
+      const changePct = previousTotalThb > 0 ? (changeThb / previousTotalThb) * 100 : 0;
+
+      const typeMovers = previous
+        ? Object.keys(point.breakdown || {})
+            .filter((key) => !key.startsWith("__"))
+            .map((type) => ({
+              type,
+              name: getTypeDisplayName(type),
+              changeThb: (Number(point.breakdown?.[type]) || 0) - (Number(previous.breakdown?.[type]) || 0)
+            }))
+            .filter((item) => Math.abs(item.changeThb) > 0)
+            .sort((a, b) => Math.abs(b.changeThb) - Math.abs(a.changeThb))
+            .slice(0, 5)
+        : [];
+
+      return {
+        ...point,
+        value: currency === "THB" ? point.totalThb : point.totalUsd,
+        changeThb,
+        changePct,
+        typeMovers
+      };
+    });
+  }, [timeline, currency]);
+
+  const filteredTimelinePoints = useMemo(() => {
+    if (range === "ALL") return dailyTimelinePoints;
+
+    const daysByRange = {
+      "1W": 7,
+      "1M": 30,
+      "3M": 90,
+      "1Y": 365
+    };
+
+    const days = daysByRange[range] || 30;
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    return dailyTimelinePoints.filter((point) => point.timestampMs >= cutoff);
+  }, [dailyTimelinePoints, range]);
+
+  const fallbackPreviousTotalThb = cleanItems.reduce(
+    (sum, item) => sum + ((Number(item.currentValueThb) || 0) - (Number(item.changeThb) || 0)),
+    0
+  );
+  const fallbackCurrentTotalThb = cleanItems.reduce(
+    (sum, item) => sum + (Number(item.currentValueThb) || 0),
+    0
+  );
+  const fallbackBaselineLabel =
+    cleanItems.find((item) => item.baselineDateKey)?.baselineLabel || "Previous";
+  const fallbackChangeThb = fallbackCurrentTotalThb - fallbackPreviousTotalThb;
+  const fallbackChartData =
+    filteredTimelinePoints.length < 2 && cleanItems.length > 0 && fallbackCurrentTotalThb > 0
+      ? [
+          {
+            dateKey: "baseline",
+            date: fallbackBaselineLabel,
+            displayDate: fallbackBaselineLabel.replace(/^vs\s+/i, ""),
+            fullDate: fallbackBaselineLabel,
+            value: currency === "USD" ? fallbackPreviousTotalThb / safeUsdToThb : fallbackPreviousTotalThb,
+            totalThb: fallbackPreviousTotalThb,
+            totalUsd: fallbackPreviousTotalThb / safeUsdToThb,
+            changeThb: 0,
+            changePct: 0,
+            typeMovers: []
+          },
+          {
+            dateKey: "current",
+            date: "Current",
+            displayDate: "Now",
+            fullDate: "Current portfolio value",
+            value: currency === "USD" ? fallbackCurrentTotalThb / safeUsdToThb : fallbackCurrentTotalThb,
+            totalThb: fallbackCurrentTotalThb,
+            totalUsd: fallbackCurrentTotalThb / safeUsdToThb,
+            changeThb: fallbackChangeThb,
+            changePct: fallbackPreviousTotalThb > 0 ? (fallbackChangeThb / fallbackPreviousTotalThb) * 100 : 0,
+            typeMovers: []
+          }
+        ]
+      : [];
+
+  const data = filteredTimelinePoints.length >= 2 ? filteredTimelinePoints : fallbackChartData;
   const totalCurrentThb = cleanItems.reduce((sum, item) => sum + (Number(item.currentValueThb) || 0), 0);
   const totalChangeThb = cleanItems.reduce((sum, item) => sum + (Number(item.changeThb) || 0), 0);
   const change = currency === "USD" ? totalChangeThb / safeUsdToThb : totalChangeThb;
@@ -1409,6 +1518,16 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
   function signedMoneyFromThb(valueThb) {
     const n = Number(valueThb) || 0;
     return `${n >= 0 ? "+" : ""}${moneyFromThb(n)}`;
+  }
+
+  function pointTotalMoney(point) {
+    if (!point) return "—";
+    return formatCurrency(Number(point.value) || 0, currency);
+  }
+
+  function handleChartClick(state) {
+    const payload = state?.activePayload?.[0]?.payload;
+    if (payload) setSelectedPoint(payload);
   }
 
   const grouped = cleanItems.reduce((acc, item) => {
@@ -1447,13 +1566,15 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     }));
   }
 
+  const rangeOptions = ["1W", "1M", "3M", "1Y", "ALL"];
+
   return (
     <section className="card">
       <div className="row">
         <div>
           <h2>Net Worth Timeline</h2>
           <p className="muted small" style={{ marginBottom: 0 }}>
-            Chart saves each Refresh; Today compares with yesterday's last refresh
+            One point per day: the last Refresh of each local day
           </p>
         </div>
         {data.length >= 2 && !hidden && (
@@ -1473,22 +1594,36 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         )}
       </div>
 
+      <div className="rangeTabs" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+        {rangeOptions.map((option) => (
+          <button
+            key={option}
+            type="button"
+            className={range === option ? "active" : "outline"}
+            onClick={() => setRange(option)}
+            style={{ padding: "7px 11px", borderRadius: 999 }}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+
       {data.length < 2 ? (
-        <p className="muted chartEmpty">Refresh prices on different days to build your timeline.</p>
+        <p className="muted chartEmpty">Refresh on at least 2 different days to build your timeline graph.</p>
       ) : (
         <div
           className="areaBox"
           style={{
             width: "100%",
-            height: 260,
-            minHeight: 260,
+            height: 280,
+            minHeight: 280,
             marginTop: 12,
             position: "relative",
             display: "block"
           }}
         >
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }} onClick={handleChartClick}>
               <defs>
                 <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.32} />
@@ -1525,7 +1660,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                 }}
                 labelStyle={{ color: "var(--muted)", fontSize: 12 }}
                 formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
-                labelFormatter={(_, payload) => payload?.[0]?.payload?.date || ""}
+                labelFormatter={(_, payload) => payload?.[0]?.payload?.fullDate || payload?.[0]?.payload?.date || ""}
               />
               <Area
                 type="monotone"
@@ -1533,11 +1668,47 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                 stroke="var(--primary)"
                 strokeWidth={3}
                 fill="url(#wealthGradient)"
-                dot={{ r: 3, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)" }}
-                activeDot={{ r: 6, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)" }}
+                dot={{ r: 4, strokeWidth: 2, stroke: "var(--primary)", fill: "var(--card)", cursor: "pointer" }}
+                activeDot={{ r: 7, stroke: "var(--card)", strokeWidth: 2, fill: "var(--primary)", cursor: "pointer" }}
               />
             </AreaChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {selectedPoint && !hidden && (
+        <div className="stat" style={{ marginTop: 12, borderRadius: 16 }}>
+          <div className="row" style={{ alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontWeight: 850 }}>{selectedPoint.displayDate}</div>
+              <div className="muted small">{selectedPoint.fullDate || selectedPoint.date}</div>
+            </div>
+            <button type="button" className="ghost" onClick={() => setSelectedPoint(null)}>✕</button>
+          </div>
+          <div style={{ marginTop: 8, fontWeight: 900, fontSize: 20 }}>
+            {pointTotalMoney(selectedPoint)}
+          </div>
+          <div className={selectedPoint.changeThb >= 0 ? "green small" : "red small"} style={{ fontWeight: 800 }}>
+            {selectedPoint.changeThb >= 0 ? "+" : ""}{moneyFromThb(selectedPoint.changeThb)}
+            {selectedPoint.changePct ? ` (${selectedPoint.changeThb >= 0 ? "+" : ""}${selectedPoint.changePct.toFixed(2)}%)` : ""}
+          </div>
+          {selectedPoint.typeMovers?.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+              <div className="muted small">Top movers that day</div>
+              {selectedPoint.typeMovers.map((mover) => (
+                <div key={mover.type} className="legendRow">
+                  <span>{mover.name}</span>
+                  <b className={mover.changeThb >= 0 ? "green" : "red"}>
+                    {signedMoneyFromThb(mover.changeThb)}
+                  </b>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="muted small" style={{ marginTop: 8 }}>
+              First point or no previous daily point to compare.
+            </div>
+          )}
         </div>
       )}
 
@@ -1546,7 +1717,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
           <div className="row" style={{ alignItems: "flex-start" }}>
             <div>
               <div style={{ fontWeight: 850 }}>Portfolio movement breakdown</div>
-              <div className="muted small">Same baseline system as the detail panel</div>
+              <div className="muted small">Today vs yesterday's last refresh snapshot</div>
             </div>
             <button type="button" className="ghost" onClick={() => setDetailOpen(true)}>View all</button>
           </div>
@@ -1654,10 +1825,10 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                                   </div>
                                   {item.quantity > 0 && item.currentUnitPriceThb > 0 && (
                                     <div className="muted small">
-                                      Price/Unit {moneyFromThb(item.currentUnitPriceThb)}
+                                      Price/Unit Change: {moneyFromThb(item.currentUnitPriceThb)}
                                       {item.previousUnitPriceThb !== null && item.previousUnitPriceThb > 0
-                                        ? ` · Price/Unit Change ${signedMoneyFromThb(item.unitChangeThb)}`
-                                        : " · new/no previous price/unit"}
+                                        ? ` · ${signedMoneyFromThb(item.unitChangeThb)}`
+                                        : " · new/no previous unit"}
                                     </div>
                                   )}
                                 </div>
@@ -1684,7 +1855,6 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     </section>
   );
 }
-
 
 function recalculateAssetFromTransactions(asset, transactions) {
   const totalQty = transactions.reduce(
