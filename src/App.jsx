@@ -1476,8 +1476,18 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
       {data.length < 2 ? (
         <p className="muted chartEmpty">Refresh prices on different days to build your timeline.</p>
       ) : (
-        <div className="areaBox">
-          <ResponsiveContainer width="100%" height="100%">
+        <div
+          className="areaBox"
+          style={{
+            width: "100%",
+            height: 260,
+            minHeight: 260,
+            marginTop: 12,
+            position: "relative",
+            display: "block"
+          }}
+        >
+          <ResponsiveContainer width="100%" height={260}>
             <AreaChart data={data} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="wealthGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1574,7 +1584,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               <div>
                 <h2>What changed?</h2>
                 <p className="muted small" style={{ marginTop: 4 }}>
-                  Uses one clear system: auto assets compare with today’s baseline; manual assets compare after you enter a new price/NAV. New assets show +0 first.
+                  Uses one clear system: Today compares current value with the previous-day snapshot. New assets show +0/new first.
                 </p>
               </div>
               <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>
@@ -1644,10 +1654,10 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                                   </div>
                                   {item.quantity > 0 && item.currentUnitPriceThb > 0 && (
                                     <div className="muted small">
-                                      Unit {moneyFromThb(item.currentUnitPriceThb)}
+                                      Price/Unit {moneyFromThb(item.currentUnitPriceThb)}
                                       {item.previousUnitPriceThb !== null && item.previousUnitPriceThb > 0
-                                        ? ` · unit ${signedMoneyFromThb(item.unitChangeThb)}`
-                                        : " · new/no previous unit"}
+                                        ? ` · Price/Unit Change ${signedMoneyFromThb(item.unitChangeThb)}`
+                                        : " · new/no previous price/unit"}
                                     </div>
                                   )}
                                 </div>
