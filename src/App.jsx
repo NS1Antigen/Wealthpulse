@@ -399,6 +399,7 @@ function convertThb(valueThb, usdToThb, currency) {
 
 const ASSET_VALUE_SNAPSHOT_KEY = "wp_asset_value_snapshot_v1";
 const ASSET_DAILY_BASELINE_KEY = "wp_asset_daily_baseline_v2";
+const ASSET_DAILY_HISTORY_KEY = "wp_asset_daily_history_v3";
 const ASSET_DELTA_KEY = "wp_asset_delta_latest_v1";
 
 function safeLoadJson(key, fallback) {
@@ -424,7 +425,18 @@ function makeAssetSnapshotKey(asset) {
 
 
 function getLocalDateKey(date = new Date()) {
-  return date.toLocaleDateString("en-CA");
+  const d = date instanceof Date ? date : new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateKeyForUi(dateKey) {
+  if (!dateKey) return "previous snapshot";
+  const parsed = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return dateKey;
+  return parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function isManualPriceAsset(type) {
@@ -441,6 +453,54 @@ function getManualPriceSignature(asset) {
     asset?.current_price_currency || "",
     asset?.manual_price_updated_at || ""
   ].join("|");
+}
+
+function getCashBalances(asset) {
+  const balances = {};
+  const txs = Array.isArray(asset?.transactions) ? asset.transactions : [];
+
+  if (txs.length > 0) {
+    txs.forEach((tx) => {
+      const currency = String(tx.currency || asset?.purchase_currency || "THB").toUpperCase();
+      const amount = safeNumber(tx.amount ?? tx.quantity);
+      balances[currency] = (balances[currency] || 0) + amount;
+    });
+    return balances;
+  }
+
+  const fallbackCurrency = String(asset?.purchase_currency || "THB").toUpperCase();
+  const amount = safeNumber(asset?.manual_value_thb);
+  if (amount) balances[fallbackCurrency] = amount;
+  return balances;
+}
+
+function cashBalancesToThb(balances, usdToThb) {
+  const fx = Number(usdToThb) || 1;
+  return Object.entries(balances || {}).reduce((sum, [currency, amount]) => {
+    const value = Number(amount) || 0;
+    return sum + (currency === "USD" ? value * fx : value);
+  }, 0);
+}
+
+function getComparableCashBalances(previousBalances, currentBalances) {
+  const comparable = {};
+  const currencies = new Set([
+    ...Object.keys(previousBalances || {}),
+    ...Object.keys(currentBalances || {})
+  ]);
+
+  currencies.forEach((currency) => {
+    const prev = Number(previousBalances?.[currency]) || 0;
+    const current = Number(currentBalances?.[currency]) || 0;
+
+    if (prev >= 0 && current >= 0) {
+      comparable[currency] = Math.min(prev, current);
+    } else {
+      comparable[currency] = prev;
+    }
+  });
+
+  return comparable;
 }
 
 function getPriceTimestamp(asset, priceData) {
@@ -474,14 +534,136 @@ function loadLatestAssetDeltas() {
   return Array.isArray(saved?.items) ? saved.items : [];
 }
 
-function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
-  const legacyPreviousSnapshot = safeLoadJson(ASSET_VALUE_SNAPSHOT_KEY, {});
-  const savedBaseline = safeLoadJson(ASSET_DAILY_BASELINE_KEY, { dateKey: null, items: {} });
-  const previousItems = savedBaseline?.items || {};
-  const nextItems = { ...previousItems };
+function buildSnapshotFromAssets(assetsWithCurrentValues, usdToThb, dateKey, nowIso) {
+  const items = {};
+
+  (assetsWithCurrentValues || []).forEach((asset) => {
+    const key = makeAssetSnapshotKey(asset);
+    const currentValueThb = safeNumber(asset.currentValueThb);
+    const quantity = safeNumber(asset.quantity);
+    const currentUnitPriceThb =
+      quantity > 0 && asset.asset_type !== "cash"
+        ? currentValueThb / quantity
+        : 0;
+
+    items[key] = {
+      id: asset.id,
+      name: asset.name,
+      ticker: asset.ticker,
+      asset_type: asset.asset_type,
+      valueThb: currentValueThb,
+      unitPriceThb: currentUnitPriceThb,
+      quantity,
+      cashBalances: asset.asset_type === "cash" ? getCashBalances(asset) : null,
+      usdToThb: Number(usdToThb) || 1,
+      dateKey,
+      savedAt: nowIso,
+      manualSignature: getManualPriceSignature(asset)
+    };
+  });
+
+  return { dateKey, updatedAt: nowIso, items };
+}
+
+function findPreviousDaySnapshot(history, todayKey) {
+  const snapshots = history?.snapshots || {};
+  const previousKeys = Object.keys(snapshots)
+    .filter((key) => key < todayKey && snapshots[key]?.items)
+    .sort();
+
+  if (previousKeys.length === 0) return null;
+  const dateKey = previousKeys[previousKeys.length - 1];
+  return snapshots[dateKey] ? { ...snapshots[dateKey], dateKey } : null;
+}
+
+function pruneSnapshotHistory(snapshots, keep = 60) {
+  const entries = Object.entries(snapshots || {}).sort(([a], [b]) => a.localeCompare(b));
+  return Object.fromEntries(entries.slice(Math.max(0, entries.length - keep)));
+}
+
+function calculateAssetChangeFromBaseline(asset, baselineItem, usdToThb) {
+  const currentValueThb = safeNumber(asset.currentValueThb);
+  const quantity = safeNumber(asset.quantity);
+  const currentUnitPriceThb =
+    quantity > 0 && asset.asset_type !== "cash"
+      ? currentValueThb / quantity
+      : 0;
+
+  if (!baselineItem) {
+    return {
+      previousValueThb: null,
+      previousUnitPriceThb: null,
+      changeThb: 0,
+      unitChangeThb: 0,
+      changePct: 0,
+      isNew: true,
+      adjustedForNewMoney: false
+    };
+  }
+
+  let previousValueThb = Number.isFinite(Number(baselineItem.valueThb))
+    ? Number(baselineItem.valueThb)
+    : null;
+  let previousUnitPriceThb = Number.isFinite(Number(baselineItem.unitPriceThb))
+    ? Number(baselineItem.unitPriceThb)
+    : null;
+  let adjustedForNewMoney = false;
+
+  if (asset.asset_type === "cash") {
+    const previousBalances = baselineItem.cashBalances || {};
+    const currentBalances = getCashBalances(asset);
+    const comparableBalances = getComparableCashBalances(previousBalances, currentBalances);
+    const previousFx = Number(baselineItem.usdToThb) || Number(usdToThb) || 1;
+
+    previousValueThb = cashBalancesToThb(comparableBalances, previousFx);
+    const currentComparableValueThb = cashBalancesToThb(comparableBalances, usdToThb);
+    const changeThb = currentComparableValueThb - previousValueThb;
+    const changePct = previousValueThb > 0 ? (changeThb / previousValueThb) * 100 : 0;
+
+    return {
+      previousValueThb,
+      previousUnitPriceThb: null,
+      changeThb,
+      unitChangeThb: 0,
+      changePct,
+      isNew: Object.keys(previousBalances).length === 0,
+      adjustedForNewMoney: true
+    };
+  }
+
+  if (quantity > 0 && previousUnitPriceThb && previousUnitPriceThb > 0) {
+    previousValueThb = previousUnitPriceThb * quantity;
+    adjustedForNewMoney = true;
+  }
+
+  const changeThb = previousValueThb === null ? 0 : currentValueThb - previousValueThb;
+  const unitChangeThb =
+    previousUnitPriceThb === null ? 0 : currentUnitPriceThb - previousUnitPriceThb;
+  const changePct =
+    previousValueThb && previousValueThb > 0
+      ? (changeThb / previousValueThb) * 100
+      : 0;
+
+  return {
+    previousValueThb,
+    previousUnitPriceThb,
+    changeThb,
+    unitChangeThb,
+    changePct,
+    isNew: previousValueThb === null,
+    adjustedForNewMoney
+  };
+}
+
+function buildAndSaveAssetDeltas(assetsWithCurrentValues, usdToThb = 1, options = {}) {
+  const { saveTodaySnapshot = true } = options;
   const now = new Date();
   const nowIso = now.toISOString();
   const todayKey = getLocalDateKey(now);
+  const history = safeLoadJson(ASSET_DAILY_HISTORY_KEY, { snapshots: {} });
+  const previousDaySnapshot = findPreviousDaySnapshot(history, todayKey);
+  const baselineItems = previousDaySnapshot?.items || {};
+  const baselineDateKey = previousDaySnapshot?.dateKey || null;
 
   const items = (assetsWithCurrentValues || []).map((asset) => {
     const key = makeAssetSnapshotKey(asset);
@@ -491,63 +673,8 @@ function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
       quantity > 0 && asset.asset_type !== "cash"
         ? currentValueThb / quantity
         : 0;
-
-    const existingDaily = previousItems?.[key] || null;
-    const legacyPrevious = legacyPreviousSnapshot?.[key] || null;
-    const isManual = isManualPriceAsset(asset.asset_type) || asset.use_manual_value;
-    const manualSignature = getManualPriceSignature(asset);
-
-    let baseline = existingDaily;
-
-    if (!baseline) {
-      baseline = legacyPrevious
-        ? {
-            valueThb: Number(legacyPrevious.valueThb) || currentValueThb,
-            unitPriceThb: Number(legacyPrevious.unitPriceThb) || currentUnitPriceThb,
-            quantity: Number(legacyPrevious.quantity) || quantity,
-            dateKey: legacyPrevious.dateKey || todayKey,
-            savedAt: legacyPrevious.savedAt || nowIso,
-            manualSignature
-          }
-        : null;
-    }
-
-    const previousValueThb = Number.isFinite(Number(baseline?.valueThb))
-      ? Number(baseline.valueThb)
-      : null;
-    const previousUnitPriceThb = Number.isFinite(Number(baseline?.unitPriceThb))
-      ? Number(baseline.unitPriceThb)
-      : null;
-
-    const changeThb = previousValueThb === null ? 0 : currentValueThb - previousValueThb;
-    const unitChangeThb =
-      previousUnitPriceThb === null ? 0 : currentUnitPriceThb - previousUnitPriceThb;
-    const changePct =
-      previousValueThb && previousValueThb > 0
-        ? (changeThb / previousValueThb) * 100
-        : 0;
-
-    // Predictable refresh behavior:
-    // - Auto assets reset the daily baseline only once per calendar day.
-    // - Manual assets do NOT reset just because you press Refresh; they reset only after you enter a new manual price/NAV.
-    const shouldResetAutoDailyBaseline = !isManual && (!baseline || baseline.dateKey !== todayKey);
-    const shouldAdvanceManualBaseline =
-      isManual && (!baseline || baseline.manualSignature !== manualSignature);
-
-    if (!baseline || shouldResetAutoDailyBaseline || shouldAdvanceManualBaseline) {
-      nextItems[key] = {
-        id: asset.id,
-        name: asset.name,
-        ticker: asset.ticker,
-        asset_type: asset.asset_type,
-        valueThb: currentValueThb,
-        unitPriceThb: currentUnitPriceThb,
-        quantity,
-        dateKey: todayKey,
-        savedAt: nowIso,
-        manualSignature
-      };
-    }
+    const baseline = baselineItems?.[key] || null;
+    const change = calculateAssetChangeFromBaseline(asset, baseline, usdToThb);
 
     return {
       key,
@@ -557,35 +684,33 @@ function buildAndSaveAssetDeltas(assetsWithCurrentValues) {
       asset_type: asset.asset_type || "other",
       quantity,
       currentValueThb,
-      previousValueThb,
-      changeThb,
-      changePct,
+      previousValueThb: change.previousValueThb,
+      changeThb: change.changeThb,
+      changePct: change.changePct,
       currentUnitPriceThb,
-      previousUnitPriceThb,
-      unitChangeThb,
-      isNew: previousValueThb === null,
-      baselineLabel: "Today",
+      previousUnitPriceThb: change.previousUnitPriceThb,
+      unitChangeThb: change.unitChangeThb,
+      isNew: change.isNew,
+      adjustedForNewMoney: change.adjustedForNewMoney,
+      baselineLabel: baselineDateKey ? `vs ${formatDateKeyForUi(baselineDateKey)}` : "new baseline",
+      baselineDateKey,
       baselineSavedAt: baseline?.savedAt || null
     };
   });
 
-  const legacySnapshot = {};
-  items.forEach((item) => {
-    legacySnapshot[item.key] = {
-      id: item.id,
-      name: item.name,
-      ticker: item.ticker,
-      asset_type: item.asset_type,
-      valueThb: item.currentValueThb,
-      unitPriceThb: item.currentUnitPriceThb,
-      quantity: item.quantity,
-      savedAt: nowIso
-    };
-  });
+  const todaySnapshot = buildSnapshotFromAssets(assetsWithCurrentValues, usdToThb, todayKey, nowIso);
+  safeSaveJson(ASSET_VALUE_SNAPSHOT_KEY, todaySnapshot.items);
 
-  safeSaveJson(ASSET_VALUE_SNAPSHOT_KEY, legacySnapshot);
-  safeSaveJson(ASSET_DAILY_BASELINE_KEY, { dateKey: todayKey, updatedAt: nowIso, items: nextItems });
-  safeSaveJson(ASSET_DELTA_KEY, { timestamp: nowIso, items });
+  if (saveTodaySnapshot) {
+    const nextSnapshots = pruneSnapshotHistory({
+      ...(history?.snapshots || {}),
+      [todayKey]: todaySnapshot
+    });
+    safeSaveJson(ASSET_DAILY_HISTORY_KEY, { updatedAt: nowIso, snapshots: nextSnapshots });
+    safeSaveJson(ASSET_DAILY_BASELINE_KEY, { dateKey: todayKey, updatedAt: nowIso, items: todaySnapshot.items });
+  }
+
+  safeSaveJson(ASSET_DELTA_KEY, { timestamp: nowIso, baselineDateKey, items });
   return items;
 }
 
@@ -616,7 +741,18 @@ function App() {
   }, [theme]);
 
   function refreshAssets() {
-    setAssets(getAssets());
+    const latestAssets = getAssets();
+    setAssets(latestAssets);
+
+    const withValues = latestAssets.map((a) => ({
+      ...a,
+      currentValueThb: getAssetCurrentValueThb(a, prices, usdToThb),
+      costValueThb: getAssetCostValueThb(a, usdToThb)
+    }));
+
+    setAssetDeltas(
+      buildAndSaveAssetDeltas(withValues, usdToThb, { saveTodaySnapshot: false })
+    );
   }
 
   async function refreshPrices() {
@@ -646,7 +782,7 @@ function App() {
         costValueThb: getAssetCostValueThb(a, finalUsdToThb)
       }));
 
-      const latestAssetDeltas = buildAndSaveAssetDeltas(withValues);
+      const latestAssetDeltas = buildAndSaveAssetDeltas(withValues, finalUsdToThb, { saveTodaySnapshot: true });
       setAssetDeltas(latestAssetDeltas);
 
       const totalThb = withValues.reduce((s, a) => s + a.currentValueThb, 0);
@@ -1317,7 +1453,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         <div>
           <h2>Net Worth Timeline</h2>
           <p className="muted small" style={{ marginBottom: 0 }}>
-            Chart saves each Refresh; movement uses a stable baseline
+            Chart saves each Refresh; Today compares with yesterday's last refresh
           </p>
         </div>
         {data.length >= 2 && !hidden && (
@@ -1331,7 +1467,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               {change >= 0 ? "+" : ""}{formatCurrency(change, currency)}
             </div>
             <div className="muted small">
-              Today / latest manual update: {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap details
+              Today: {change >= 0 ? "+" : ""}{changePct.toFixed(2)}% · tap details
             </div>
           </button>
         )}
@@ -1657,8 +1793,8 @@ function AssetItem({ asset, priceData, deltaData, usdToThb, currency, hidden, on
           percentText: hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${todayChangePct.toFixed(2)}%` : "new",
           moneyText: hasTodayChange ? `${todayChangeThb >= 0 ? "+" : ""}${formatCurrency(todayChangeValue, currency)}` : "New baseline",
           explain: isManualPriceAsset(asset.asset_type)
-            ? "Today change for manual assets is based on your latest entered price compared with the previous entered price. Refresh alone does not reset it."
-            : "Today change is compared with today's saved baseline. Refresh updates prices, but it does not keep resetting the daily baseline during the same day.",
+            ? "Today compares current value with yesterday's last refresh snapshot. New deposits or extra shares today are adjusted so they do not look like market gain."
+            : "Today compares current value with yesterday's last refresh snapshot. Refreshing many times today does not reset the comparison baseline.",
           extra: compactTimestamp ? `Price updated: ${compactTimestamp}` : "No update timestamp saved"
         }
       : null;
