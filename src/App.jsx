@@ -1384,45 +1384,85 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
 
   const safeUsdToThb = Number(usdToThb) || 1;
   const cleanItems = Array.isArray(assetDeltas) ? assetDeltas : [];
+  const todayKey = getLocalDateKey(new Date());
 
-  const dailyTimelinePoints = useMemo(() => {
+  const totalCurrentThb = cleanItems.reduce((sum, item) => sum + (Number(item.currentValueThb) || 0), 0);
+  const totalChangeThb = cleanItems.reduce((sum, item) => sum + (Number(item.changeThb) || 0), 0);
+  const change = currency === "USD" ? totalChangeThb / safeUsdToThb : totalChangeThb;
+  const changePct = totalCurrentThb - totalChangeThb > 0
+    ? (totalChangeThb / (totalCurrentThb - totalChangeThb)) * 100
+    : 0;
+
+  const dailySnapshotPoints = useMemo(() => {
+    const history = safeLoadJson(ASSET_DAILY_HISTORY_KEY, { snapshots: {} });
+    const snapshots = history?.snapshots || {};
     const byDate = {};
 
-    (Array.isArray(timeline) ? timeline : []).forEach((t) => {
-      const parsedDate = new Date(t.date);
-      if (Number.isNaN(parsedDate.getTime())) return;
+    function totalsFromSnapshotItems(itemsObj) {
+      const values = Object.values(itemsObj || {});
+      const totalThb = values.reduce((sum, item) => sum + (Number(item.valueThb) || 0), 0);
+      const breakdown = {};
 
-      const dateKey = getLocalDateKey(parsedDate);
-      const totalThb = Number(t.totalThb) || 0;
-      const totalUsd = Number(t.totalUsd) || 0;
-      if (!totalThb && !totalUsd) return;
+      values.forEach((item) => {
+        const type = item.asset_type || "other";
+        breakdown[type] = (breakdown[type] || 0) + (Number(item.valueThb) || 0);
+      });
 
-      const existing = byDate[dateKey];
-      if (!existing || parsedDate.getTime() >= existing.timestampMs) {
-        byDate[dateKey] = {
-          dateKey,
-          date: t.date,
-          timestampMs: parsedDate.getTime(),
-          displayDate: parsedDate.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-          fullDate: parsedDate.toLocaleString(),
-          totalThb,
-          totalUsd,
-          breakdown: t.breakdown || {}
-        };
-      }
+      return { totalThb, breakdown };
+    }
+
+    Object.entries(snapshots).forEach(([dateKey, snapshot]) => {
+      if (!dateKey || !snapshot?.items) return;
+      const { totalThb, breakdown } = totalsFromSnapshotItems(snapshot.items);
+      if (!totalThb) return;
+
+      const dateObj = new Date(`${dateKey}T12:00:00`);
+      const timestampMs = Number.isNaN(dateObj.getTime()) ? 0 : dateObj.getTime();
+
+      byDate[dateKey] = {
+        dateKey,
+        timestampMs,
+        displayDate: dateKey === todayKey ? "Today" : formatDateKeyForUi(dateKey),
+        fullDate: dateKey === todayKey ? "Today" : formatDateKeyForUi(dateKey),
+        savedAt: snapshot.updatedAt || snapshot.savedAt || null,
+        totalThb,
+        totalUsd: totalThb / safeUsdToThb,
+        breakdown
+      };
     });
 
-    const points = Object.values(byDate).sort((a, b) => a.timestampMs - b.timestampMs);
+    // Always override today's graph point with the currently visible portfolio value.
+    // This makes the rightmost graph point, Today number, and movement breakdown use the same live state.
+    if (cleanItems.length > 0 && totalCurrentThb > 0) {
+      const breakdown = {};
+      cleanItems.forEach((item) => {
+        const type = item.asset_type || "other";
+        breakdown[type] = (breakdown[type] || 0) + (Number(item.currentValueThb) || 0);
+      });
+
+      const todayDateObj = new Date(`${todayKey}T12:00:00`);
+      byDate[todayKey] = {
+        dateKey: todayKey,
+        timestampMs: todayDateObj.getTime(),
+        displayDate: "Today",
+        fullDate: "Today",
+        savedAt: new Date().toISOString(),
+        totalThb: totalCurrentThb,
+        totalUsd: totalCurrentThb / safeUsdToThb,
+        breakdown
+      };
+    }
+
+    const points = Object.values(byDate).sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
 
     return points.map((point, index) => {
       const previous = index > 0 ? points[index - 1] : null;
       const changeThb = previous ? point.totalThb - previous.totalThb : 0;
       const previousTotalThb = previous ? previous.totalThb : 0;
-      const changePct = previousTotalThb > 0 ? (changeThb / previousTotalThb) * 100 : 0;
+      const pointChangePct = previousTotalThb > 0 ? (changeThb / previousTotalThb) * 100 : 0;
 
       const typeMovers = previous
         ? Object.keys(point.breakdown || {})
-            .filter((key) => !key.startsWith("__"))
             .map((type) => ({
               type,
               name: getTypeDisplayName(type),
@@ -1437,14 +1477,14 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         ...point,
         value: currency === "THB" ? point.totalThb : point.totalUsd,
         changeThb,
-        changePct,
+        changePct: pointChangePct,
         typeMovers
       };
     });
-  }, [timeline, currency]);
+  }, [cleanItems, currency, safeUsdToThb, todayKey, totalCurrentThb]);
 
   const filteredTimelinePoints = useMemo(() => {
-    if (range === "ALL") return dailyTimelinePoints;
+    if (range === "ALL") return dailySnapshotPoints;
 
     const daysByRange = {
       "1W": 7,
@@ -1454,58 +1494,13 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     };
 
     const days = daysByRange[range] || 30;
-    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-    return dailyTimelinePoints.filter((point) => point.timestampMs >= cutoff);
-  }, [dailyTimelinePoints, range]);
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days + 1);
+    const cutoffKey = getLocalDateKey(cutoffDate);
+    return dailySnapshotPoints.filter((point) => point.dateKey >= cutoffKey);
+  }, [dailySnapshotPoints, range]);
 
-  const fallbackPreviousTotalThb = cleanItems.reduce(
-    (sum, item) => sum + ((Number(item.currentValueThb) || 0) - (Number(item.changeThb) || 0)),
-    0
-  );
-  const fallbackCurrentTotalThb = cleanItems.reduce(
-    (sum, item) => sum + (Number(item.currentValueThb) || 0),
-    0
-  );
-  const fallbackBaselineLabel =
-    cleanItems.find((item) => item.baselineDateKey)?.baselineLabel || "Previous";
-  const fallbackChangeThb = fallbackCurrentTotalThb - fallbackPreviousTotalThb;
-  const fallbackChartData =
-    filteredTimelinePoints.length < 2 && cleanItems.length > 0 && fallbackCurrentTotalThb > 0
-      ? [
-          {
-            dateKey: "baseline",
-            date: fallbackBaselineLabel,
-            displayDate: fallbackBaselineLabel.replace(/^vs\s+/i, ""),
-            fullDate: fallbackBaselineLabel,
-            value: currency === "USD" ? fallbackPreviousTotalThb / safeUsdToThb : fallbackPreviousTotalThb,
-            totalThb: fallbackPreviousTotalThb,
-            totalUsd: fallbackPreviousTotalThb / safeUsdToThb,
-            changeThb: 0,
-            changePct: 0,
-            typeMovers: []
-          },
-          {
-            dateKey: "current",
-            date: "Current",
-            displayDate: "Now",
-            fullDate: "Current portfolio value",
-            value: currency === "USD" ? fallbackCurrentTotalThb / safeUsdToThb : fallbackCurrentTotalThb,
-            totalThb: fallbackCurrentTotalThb,
-            totalUsd: fallbackCurrentTotalThb / safeUsdToThb,
-            changeThb: fallbackChangeThb,
-            changePct: fallbackPreviousTotalThb > 0 ? (fallbackChangeThb / fallbackPreviousTotalThb) * 100 : 0,
-            typeMovers: []
-          }
-        ]
-      : [];
-
-  const data = filteredTimelinePoints.length >= 2 ? filteredTimelinePoints : fallbackChartData;
-  const totalCurrentThb = cleanItems.reduce((sum, item) => sum + (Number(item.currentValueThb) || 0), 0);
-  const totalChangeThb = cleanItems.reduce((sum, item) => sum + (Number(item.changeThb) || 0), 0);
-  const change = currency === "USD" ? totalChangeThb / safeUsdToThb : totalChangeThb;
-  const changePct = totalCurrentThb - totalChangeThb > 0
-    ? (totalChangeThb / (totalCurrentThb - totalChangeThb)) * 100
-    : 0;
+  const data = filteredTimelinePoints;
 
   function fromThb(valueThb) {
     return currency === "USD" ? valueThb / safeUsdToThb : valueThb;
@@ -1574,7 +1569,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
         <div>
           <h2>Net Worth Timeline</h2>
           <p className="muted small" style={{ marginBottom: 0 }}>
-            One point per day: the last Refresh of each local day
+            Daily graph uses the latest snapshot of each day. Today uses your current latest value.
           </p>
         </div>
         {data.length >= 2 && !hidden && (
@@ -1660,7 +1655,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                 }}
                 labelStyle={{ color: "var(--muted)", fontSize: 12 }}
                 formatter={(v) => hidden ? "••••••" : formatCurrency(v, currency)}
-                labelFormatter={(_, payload) => payload?.[0]?.payload?.fullDate || payload?.[0]?.payload?.date || ""}
+                labelFormatter={(_, payload) => payload?.[0]?.payload?.fullDate || payload?.[0]?.payload?.displayDate || ""}
               />
               <Area
                 type="monotone"
@@ -1681,7 +1676,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
           <div className="row" style={{ alignItems: "flex-start" }}>
             <div>
               <div style={{ fontWeight: 850 }}>{selectedPoint.displayDate}</div>
-              <div className="muted small">{selectedPoint.fullDate || selectedPoint.date}</div>
+              <div className="muted small">Daily snapshot · no time label</div>
             </div>
             <button type="button" className="ghost" onClick={() => setSelectedPoint(null)}>✕</button>
           </div>
@@ -1717,7 +1712,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
           <div className="row" style={{ alignItems: "flex-start" }}>
             <div>
               <div style={{ fontWeight: 850 }}>Portfolio movement breakdown</div>
-              <div className="muted small">Today vs yesterday's last refresh snapshot</div>
+              <div className="muted small">Today vs yesterday's latest snapshot</div>
             </div>
             <button type="button" className="ghost" onClick={() => setDetailOpen(true)}>View all</button>
           </div>
@@ -1755,7 +1750,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
               <div>
                 <h2>What changed?</h2>
                 <p className="muted small" style={{ marginTop: 4 }}>
-                  Uses one clear system: Today compares current value with the previous-day snapshot. New assets show +0/new first.
+                  Today compares the latest current portfolio with yesterday's latest snapshot. New money and extra shares are adjusted so deposits do not look like market profit.
                 </p>
               </div>
               <button type="button" className="ghost" onClick={() => setDetailOpen(false)}>
@@ -1825,10 +1820,10 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
                                   </div>
                                   {item.quantity > 0 && item.currentUnitPriceThb > 0 && (
                                     <div className="muted small">
-                                      Price/Unit Change: {moneyFromThb(item.currentUnitPriceThb)}
+                                      Price/Unit Change {moneyFromThb(item.currentUnitPriceThb)}
                                       {item.previousUnitPriceThb !== null && item.previousUnitPriceThb > 0
                                         ? ` · ${signedMoneyFromThb(item.unitChangeThb)}`
-                                        : " · new/no previous unit"}
+                                        : " · new/no previous price"}
                                     </div>
                                   )}
                                 </div>
@@ -1855,6 +1850,7 @@ function NetWorthChart({ timeline, currency, hidden, assetDeltas = [], usdToThb 
     </section>
   );
 }
+
 
 function recalculateAssetFromTransactions(asset, transactions) {
   const totalQty = transactions.reduce(
