@@ -397,6 +397,42 @@ function convertThb(valueThb, usdToThb, currency) {
   return currency === "USD" ? valueThb / usdToThb : valueThb;
 }
 
+function shouldShareManualPrice(type) {
+  return type === "thai_stock" ||
+    type === "international_stock" ||
+    type === "mutual_fund";
+}
+
+function syncSharedManualPriceForTicker(data) {
+  if (!shouldShareManualPrice(data?.asset_type) || !data?.ticker) return;
+
+  const allAssets = getAssets();
+  const sameTickerAssets = allAssets.filter(
+    (a) =>
+      a.ticker &&
+      a.asset_type === data.asset_type &&
+      a.ticker.toUpperCase() === data.ticker.toUpperCase()
+  );
+
+  sameTickerAssets.forEach((asset) => {
+    updateAsset(asset.id, {
+      ...asset,
+      manual_value_thb:
+        data.manual_value_thb !== undefined
+          ? data.manual_value_thb
+          : asset.manual_value_thb,
+      current_price_currency:
+        data.current_price_currency || asset.current_price_currency,
+      manual_ivv_close_price:
+        data.manual_ivv_close_price || asset.manual_ivv_close_price,
+      ivv_last_updated:
+        data.ivv_last_updated || asset.ivv_last_updated,
+      manual_price_updated_at:
+        data.manual_price_updated_at || new Date().toISOString()
+    });
+  });
+}
+
 const ASSET_VALUE_SNAPSHOT_KEY = "wp_asset_value_snapshot_v1";
 const ASSET_DAILY_BASELINE_KEY = "wp_asset_daily_baseline_v2";
 const ASSET_DAILY_HISTORY_KEY = "wp_asset_daily_history_v3";
@@ -974,6 +1010,41 @@ function App() {
                   manual_price_updated_at: data.manual_price_updated_at
                 });
               } else {
+                const latestSameTickerAsset = getAssets()
+                  .filter(
+                    (a) =>
+                      a.ticker &&
+                      data.ticker &&
+                      a.ticker.toUpperCase() === data.ticker.toUpperCase() &&
+                      a.asset_type === data.asset_type
+                  )
+                  .sort(
+                    (a, b) =>
+                      new Date(b.manual_price_updated_at || 0).getTime() -
+                      new Date(a.manual_price_updated_at || 0).getTime()
+                  )[0];
+
+                if (latestSameTickerAsset) {
+                  data.manual_value_thb =
+                    latestSameTickerAsset.manual_value_thb;
+
+                  data.current_price_currency =
+                    latestSameTickerAsset.current_price_currency ||
+                    data.current_price_currency;
+
+                  data.manual_ivv_close_price =
+                    latestSameTickerAsset.manual_ivv_close_price ||
+                    data.manual_ivv_close_price;
+
+                  data.ivv_last_updated =
+                    latestSameTickerAsset.ivv_last_updated ||
+                    data.ivv_last_updated;
+
+                  data.manual_price_updated_at =
+                    latestSameTickerAsset.manual_price_updated_at ||
+                    data.manual_price_updated_at;
+                }
+
                 createAsset({
                   ...data,
                   quantity: 0,
@@ -987,6 +1058,14 @@ function App() {
               }
             } else {
               const existing = getAssets().find(
+                (a) =>
+                  a.ticker &&
+                  data.ticker &&
+                  a.ticker.toUpperCase() === data.ticker.toUpperCase() &&
+                  a.asset_type === data.asset_type
+              );
+
+              const sameTickerAssets = getAssets().filter(
                 (a) =>
                   a.ticker &&
                   data.ticker &&
@@ -1040,6 +1119,30 @@ function App() {
 
                 const avgCost = knownQty > 0 ? totalKnownCost / knownQty : 0;
 
+                // Shared current price per ticker:
+                // if this ticker price is updated, all positions with the same ticker use it.
+                sameTickerAssets.forEach((sameAsset) => {
+                  updateAsset(sameAsset.id, {
+                    ...sameAsset,
+                    manual_value_thb:
+                      data.manual_value_thb !== undefined
+                        ? data.manual_value_thb
+                        : sameAsset.manual_value_thb,
+                    current_price_currency:
+                      data.current_price_currency ||
+                      sameAsset.current_price_currency,
+                    manual_ivv_close_price:
+                      data.manual_ivv_close_price ||
+                      sameAsset.manual_ivv_close_price,
+                    ivv_last_updated:
+                      data.ivv_last_updated ||
+                      sameAsset.ivv_last_updated,
+                    manual_price_updated_at:
+                      data.manual_price_updated_at ||
+                      new Date().toISOString()
+                  });
+                });
+
                 updateAsset(existing.id, {
                   ...existing,
                   name: existing.name || data.name,
@@ -1064,6 +1167,8 @@ function App() {
                 });
               }
             }
+
+            syncSharedManualPriceForTicker(data);
 
             setModalAsset(null);
             refreshAssets();
